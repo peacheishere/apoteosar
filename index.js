@@ -19,6 +19,8 @@
   var fila = Promise.resolve();
   var pendentes = 0;
   var ultimoMotivo = "nenhuma ainda";
+  var ultimaEntrada = "";
+  var ultimaResposta = "";
 
   // ---------- utilidades ----------
 
@@ -40,6 +42,11 @@
     var f = faltando();
     if (f.length) t += " (falta: " + f.join(", ") + ")";
     return t;
+  }
+
+  function cortar(t) {
+    t = String(t).replace(/\n/g, " / ");
+    return t.length > 90 ? t.slice(0, 90) + "…" : t;
   }
 
   function contar(re, s) {
@@ -69,19 +76,26 @@
 
   function montarPrompt() {
     return [
-      "Você é um revisor mínimo de mensagens de chat em português. Devolva o MESMO texto, mudando SOMENTE:",
-      "1) acentos e cedilha em palavras que você tem certeza que levam acento (leia a frase inteira; na dúvida, deixe como está);",
-      "2) letra maiúscula no início das frases e em nomes próprios;",
-      "3) ponto final e vírgula onde claramente cabem. Você também pode usar dois-pontos (:), ponto e vírgula (;) e til (~) quando fizerem sentido; na dúvida, não use. Se a frase parecer uma pergunta, NÃO coloque ponto final nem interrogação.",
-      "REGRAS: não troque, remova, adicione nem reordene nenhuma palavra, e não junte nem separe palavras. " +
-        "Não corrija gírias, abreviações (vc, tb, blz) nem erros de digitação. Não mude o tom. " +
-        "Não mexa em porque/por que/porquê, mas/mais, a/há. " +
-        "Não adicione emojis, exclamações nem interrogações.",
+      "Você é um revisor de mensagens de chat em português. A mensagem foi digitada de qualquer jeito (sem acentos, sem pontuação, sem maiúsculas). Devolva a MESMA mensagem corrigida, fazendo um trabalho COMPLETO nestes três itens, sem deixar nada para trás:",
+      "1) ACENTOS: coloque todos os acentos e cedilhas que as palavras exigem (você, não, amanhã, já, é, está, tá, né, pão, vídeo...). Leia a frase inteira para decidir entre palavras parecidas (e/é, esta/está, ja/já).",
+      "2) MAIÚSCULAS: a primeira letra de cada frase e os nomes próprios (pessoas, lugares, marcas).",
+      "3) PONTUAÇÃO: ponto final no fim de toda frase afirmativa; vírgulas onde a gramática pede (vocativos, listas, orações, expressões como então, porém, né). Você também pode usar dois-pontos (:), ponto e vírgula (;) e til (~) quando fizerem sentido. Só deixe sem ponto final se a frase for CLARAMENTE uma pergunta (nesse caso, sem ponto final e sem interrogação).",
+      "PROIBIDO: trocar, remover, adicionar, juntar, separar ou reordenar palavras; corrigir gírias, abreviações (vc, tb, blz, kkk) ou erros de digitação; mudar o tom; adicionar emojis, exclamações ou interrogações; mexer em porque/por que/porquê, mas/mais, a/há.",
       storage.crase
-        ? "Use crase (à, às, àquele) quando a gramática exigir e você tiver certeza."
+        ? "Use crase (à, às, àquele) quando a gramática exigir."
         : "NÃO use crase.",
       "Se o texto não estiver em português, devolva-o exatamente igual.",
       "Mantenha as quebras de linha e os marcadores \u27e6número\u27e7 exatamente onde estão.",
+      "EXEMPLOS (entrada => saída):",
+      "oi tudo bem com voce => Oi, tudo bem com você",
+      "nao sei se vou amanha => Não sei se vou amanhã.",
+      "ta bom entao fechado => Tá bom, então fechado.",
+      "comprei pao leite e ovos no mercado => Comprei pão, leite e ovos no mercado.",
+      "vc ja viu o video que o joao mandou => Vc já viu o vídeo que o João mandou",
+      "mano que loucura isso ne => Mano, que loucura isso, né.",
+      "eu vou sair mais cedo hoje porque tenho consulta => Eu vou sair mais cedo hoje porque tenho consulta.",
+      "valeu => Valeu.",
+      "kkkk => kkkk",
       "Responda somente com o texto final, sem aspas e sem comentários.",
     ].join("\n");
   }
@@ -166,8 +180,11 @@
     if (!/[A-Za-z\u00c0-\u00ff]/.test(protegido.replace(MARCADOR, ""))) {
       return Promise.resolve(texto);
     }
+    ultimaEntrada = texto;
+    ultimaResposta = "";
     return chamarApi(protegido).then(
       function (resposta) {
+        ultimaResposta = typeof resposta === "string" ? resposta : "";
         var motivo = validar(protegido, resposta, guardados.length);
         if (motivo) {
           ultimoMotivo = motivo;
@@ -257,6 +274,9 @@
     });
     registrar("correcao_status", "Mostra se a correção está ligada e o resultado da última", [], function () {
       avisar(estado() + " | última: " + ultimoMotivo);
+    });
+    registrar("correcao_ultima", "Mostra o que a IA devolveu na última mensagem e se foi aceita", [], function () {
+      avisar("Você: " + cortar(ultimaEntrada) + " | IA: " + cortar(ultimaResposta) + " | " + ultimoMotivo);
     });
     registrar("correcao_crase", "Liga ou desliga o uso de crase pela IA", [], function () {
       storage.crase = !storage.crase;
