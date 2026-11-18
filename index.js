@@ -8,10 +8,29 @@
   var commands = vendetta.commands;
   var showToast = vendetta.ui.toasts.showToast;
 
+  var VERSAO = "0.4";
   var LIMITE_CARACTERES = 1500;
-  // Trechos que a IA nunca ve nem mexe: codigo, mencoes, emojis, links, numeros/horas/datas.
-  var PROTEGER = /```[\s\S]*?```|`[^`\n]*`|<[^>\n]+>|https?:\/\/\S+|:[A-Za-z0-9_]+:|\d+(?:[.,:\/-]\d+)+/g;
-  var MARCADOR = /\u27e6\d+\u27e7/g;
+  // Trechos que a IA nunca ve nem mexe: codigo, mencoes (<@id>, <#id>, <@&id>), @everyone/@here, @nome,
+  // #canal, emojis (do Discord e unicode), links (com ou sem http), e-mails, numeros/horas/datas.
+  var PROTEGER = new RegExp(
+    [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]*`",
+      "<[^>\\n]+>",
+      "https?:\\/\\/\\S+",
+      "(?:www\\.)?[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.(?:com|net|org|br|io|gg|me|app|dev|tv|co|ly|to|xyz|info|gov|edu|ai|us|uk|pt|de|fr|es|it|jp|ru|cc|ws|be|link|site|online)\\b(?:[\\/?#]\\S*)?",
+      "[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+",
+      "@(?:everyone|here)\\b",
+      "@[\\w.]+",
+      "#[\\w-]+",
+      ":[A-Za-z0-9_]+:",
+      "\\d+(?:[.,:\\/-]\\d+)+",
+      "[\\u2600-\\u27bf\\u2b00-\\u2bff\\ufe0f\\u200d]",
+      "[\\ud83c-\\ud83e][\\udc00-\\udfff]",
+    ].join("|"),
+    "gi"
+  );
+  var MARCADOR = /\u00a7\d+\u00a7/g;
   var DE = "áàâãäåéèêëíìîïóòôõöúùûüçñ";
   var PARA = "aaaaaaeeeeiiiiooooouuuucn";
 
@@ -21,6 +40,7 @@
   var ultimoMotivo = "nenhuma ainda";
   var ultimaEntrada = "";
   var ultimaResposta = "";
+  var ultimaDuracao = 0;
 
   // ---------- utilidades ----------
 
@@ -36,9 +56,14 @@
     });
   }
 
+  function limiteSeg() {
+    return Number(storage.limite) || 6;
+  }
+
   function estado() {
-    var t = storage.ligada ? "Correção ligada" : "Correção desligada";
-    t += storage.crase ? ", com crase" : ", sem crase";
+    var t = "Corretor v" + VERSAO + ": " + (storage.ligada ? "ligado" : "desligado");
+    t += ", crase " + (storage.crase ? "LIGADA" : "desligada");
+    t += ", limite " + limiteSeg() + "s";
     var f = faltando();
     if (f.length) t += " (falta: " + f.join(", ") + ")";
     return t;
@@ -85,7 +110,7 @@
         ? "Use crase (à, às, àquele) quando a gramática exigir."
         : "NÃO use crase.",
       "Se o texto não estiver em português, devolva-o exatamente igual.",
-      "Mantenha as quebras de linha e os marcadores \u27e6número\u27e7 exatamente onde estão.",
+      "Mantenha as quebras de linha e os marcadores \u00a7número\u00a7 exatamente onde estão.",
       "EXEMPLOS (entrada => saída):",
       "oi tudo bem com voce => Oi, tudo bem com você",
       "nao sei se vou amanha => Não sei se vou amanhã.",
@@ -107,7 +132,7 @@
     if (String(storage.url).indexOf("https://") !== 0) {
       return Promise.reject(new Error("url precisa começar com https://"));
     }
-    var limiteMs = (Number(storage.limite) || 4) * 1000;
+    var limiteMs = limiteSeg() * 1000;
     var controlador = typeof AbortController === "function" ? new AbortController() : null;
     var timer;
 
@@ -162,7 +187,7 @@
     if (contar(/\n/g, saida) !== contar(/\n/g, entrada)) return "IA mudou as quebras de linha";
     if (saida.length > entrada.length * 1.5 + 10) return "resposta grande demais";
     for (var i = 0; i < nMarcadores; i++) {
-      if (contar(new RegExp("\u27e6" + i + "\u27e7", "g"), saida) !== 1) {
+      if (contar(new RegExp("\u00a7" + i + "\u00a7", "g"), saida) !== 1) {
         return "IA perdeu um trecho protegido";
       }
     }
@@ -175,16 +200,28 @@
     var guardados = [];
     var protegido = texto.replace(PROTEGER, function (m) {
       guardados.push(m);
-      return "\u27e6" + (guardados.length - 1) + "\u27e7";
+      return "\u00a7" + (guardados.length - 1) + "\u00a7";
     });
     if (!/[A-Za-z\u00c0-\u00ff]/.test(protegido.replace(MARCADOR, ""))) {
       return Promise.resolve(texto);
     }
     ultimaEntrada = texto;
     ultimaResposta = "";
+    var inicio = Date.now();
     return chamarApi(protegido).then(
       function (resposta) {
+        ultimaDuracao = (Date.now() - inicio) / 1000;
         ultimaResposta = typeof resposta === "string" ? resposta : "";
+        if (typeof resposta === "string") {
+          // Crase desligada: tira a crase que a IA colocou, mas aproveita o resto da correcao.
+          if (!storage.crase && contar(/[àÀ]/g, resposta) > contar(/[àÀ]/g, protegido)) {
+            resposta = resposta.replace(/à/g, "a").replace(/À/g, "A");
+          }
+          // Nao mexe em porque/porquê: desfaz o acento que a IA colocou.
+          if (contar(/porqu[êÊ]/gi, resposta) > contar(/porqu[êÊ]/gi, protegido)) {
+            resposta = resposta.replace(/porquê/g, "porque").replace(/Porquê/g, "Porque").replace(/PORQUÊ/g, "PORQUE");
+          }
+        }
         var motivo = validar(protegido, resposta, guardados.length);
         if (motivo) {
           ultimoMotivo = motivo;
@@ -192,12 +229,13 @@
         }
         var corrigido = resposta.replace(/^\s+|\s+$/g, "");
         guardados.forEach(function (original, i) {
-          corrigido = corrigido.split("\u27e6" + i + "\u27e7").join(original);
+          corrigido = corrigido.split("\u00a7" + i + "\u00a7").join(original);
         });
         ultimoMotivo = "ok";
         return corrigido;
       },
       function (erro) {
+        ultimaDuracao = (Date.now() - inicio) / 1000;
         ultimoMotivo = String((erro && erro.message) || erro);
         return texto;
       }
@@ -275,20 +313,28 @@
     registrar("correcao_status", "Mostra se a correção está ligada e o resultado da última", [], function () {
       avisar(estado() + " | última: " + ultimoMotivo);
     });
-    registrar("correcao_ultima", "Mostra o que a IA devolveu na última mensagem e se foi aceita", [], function () {
-      avisar("Você: " + cortar(ultimaEntrada) + " | IA: " + cortar(ultimaResposta) + " | " + ultimoMotivo);
+    registrar("correcao_ultima", "Mostra o que a IA devolveu na última mensagem, se foi aceita e quanto demorou", [], function () {
+      avisar(
+        "Você: " + cortar(ultimaEntrada) + " | IA: " + cortar(ultimaResposta) + " | " + ultimoMotivo +
+          " (" + ultimaDuracao.toFixed(1) + "s) | crase " + (storage.crase ? "LIGADA" : "desligada")
+      );
     });
-    registrar("correcao_crase", "Liga ou desliga o uso de crase pela IA", [], function () {
-      storage.crase = !storage.crase;
+    registrar("correcao_crase_ligar", "Liga a crase", [], function () {
+      storage.crase = true;
+      avisar(estado());
+    });
+    registrar("correcao_crase_desligar", "Desliga a crase", [], function () {
+      storage.crase = false;
       avisar(estado());
     });
     registrar(
       "correcao_api",
-      "Define a API de IA (url https, modelo e chave)",
+      "Define a API de IA (url https, modelo, chave e tempo limite)",
       [
         opcao("url", "Endereço da API (começa com https://)"),
         opcao("modelo", "Nome do modelo"),
         opcao("chave", "Chave da API"),
+        opcao("limite", "Tempo máximo de espera, em segundos (1 a 30)"),
       ],
       function (args) {
         var salvos = [];
@@ -305,6 +351,14 @@
           } else if (a.name === "modelo") {
             storage.modelo = valor;
             salvos.push("modelo");
+          } else if (a.name === "limite") {
+            var n = Number(String(valor).replace(",", "."));
+            if (!(n >= 1 && n <= 30)) {
+              avisar("O limite precisa ser um número de 1 a 30");
+              return;
+            }
+            storage.limite = n;
+            salvos.push("limite");
           } else if (a.name === "chave") {
             storage.chave = valor;
             salvos.push("chave");
@@ -319,7 +373,7 @@
     onLoad: function () {
       if (storage.ligada === undefined) storage.ligada = true;
       if (storage.crase === undefined) storage.crase = false;
-      if (storage.limite === undefined) storage.limite = 4;
+      if (storage.limite === undefined) storage.limite = 6;
       instalarPatch(); // se falhar, o plugin se desliga e avisa
       try {
         registrarComandos();
