@@ -1,0 +1,11 @@
+{
+  "name": "Corretor",
+  "description": "Corrige acentos, maiúsculas, ponto final e vírgula das suas mensagens antes de enviar, usando uma API de IA. Comandos: /correcao_ligar, /correcao_desligar, /correcao_status, /correcao_crase, /correcao_api.",
+  "authors": [
+    {
+      "name": "Corretor"
+    }
+  ],
+  "main": "index.js",
+  "hash": "5faa3c4854ed9f76db9020ef7403f17d04bf09d358e88fc27739919dc58a89db"
+}
