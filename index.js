@@ -7,7 +7,7 @@
   var storage = vendetta.plugin.storage;
   var showToast = vendetta.ui.toasts.showToast;
 
-  var VERSAO = "0.7";
+  var VERSAO = "0.8";
   var LIMITE_CARACTERES = 1500;
   var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
   var GEMINI_MODELO = "gemini-3.5-flash-lite";
@@ -145,14 +145,21 @@
     ].join("\n");
   }
 
+  // Resumo curto de um texto de erro da API, sem a chave.
+  function trecho(t) {
+    t = String(t || "").replace(/\s+/g, " ");
+    if (storage.chave) t = t.split(String(storage.chave)).join("***");
+    return t.length > 160 ? t.slice(0, 160) + "…" : t;
+  }
+
   // ---------- chamada da API (com tempo limite) ----------
 
-  function chamarApi(texto) {
+  function chamarApi(texto, limiteOpcional) {
     if (faltando().length) return Promise.reject(new Error("falta configurar: " + faltando().join(", ")));
     if (String(storage.url).indexOf("https://") !== 0) {
       return Promise.reject(new Error("url precisa começar com https://"));
     }
-    var limiteMs = limiteSeg() * 1000;
+    var limiteMs = limiteOpcional || limiteSeg() * 1000;
     var controlador = typeof AbortController === "function" ? new AbortController() : null;
     var timer;
 
@@ -172,7 +179,16 @@
       signal: controlador ? controlador.signal : undefined,
     })
       .then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
+        if (!r.ok) {
+          return r.text().then(
+            function (corpo) {
+              throw new Error("HTTP " + r.status + ": " + trecho(corpo));
+            },
+            function () {
+              throw new Error("HTTP " + r.status);
+            }
+          );
+        }
         return r.json();
       })
       .then(function (d) {
@@ -217,7 +233,7 @@
   }
 
   // Processa um texto. Nunca rejeita: devolve { final, veredito, bruto, seg }.
-  function processar(texto) {
+  function processar(texto, limiteOpcional) {
     var guardados = [];
     var protegido = texto.replace(PROTEGER, function (m) {
       guardados.push(m);
@@ -227,7 +243,7 @@
       return Promise.resolve({ final: texto, veredito: "ignorada: sem letras", bruto: "", seg: 0 });
     }
     var inicio = Date.now();
-    return chamarApi(protegido).then(
+    return chamarApi(protegido, limiteOpcional).then(
       function (resposta) {
         var seg = (Date.now() - inicio) / 1000;
         var bruto = typeof resposta === "string" ? resposta : "";
@@ -321,6 +337,72 @@
     } catch (e) {
       avisar("Não consegui copiar. Segure o texto dos logs para selecionar.");
     }
+  }
+
+  // ---------- diagnostico de velocidade (conexao x modelo) ----------
+
+  // Faz um pedido e nunca rejeita: devolve { status, corpo, seg, erro }.
+  function pedirSimples(url, opcoes, limiteMs) {
+    var inicio = Date.now();
+    var controlador = typeof AbortController === "function" ? new AbortController() : null;
+    var timer;
+    var pedido = fetch(url, Object.assign({}, opcoes, { signal: controlador ? controlador.signal : undefined })).then(function (r) {
+      return r.text().then(function (corpo) {
+        return { status: r.status, corpo: corpo };
+      });
+    });
+    var prazo = new Promise(function (_, rejeitar) {
+      timer = setTimeout(function () {
+        if (controlador) controlador.abort();
+        rejeitar(new Error("tempo limite de " + limiteMs / 1000 + "s"));
+      }, limiteMs);
+    });
+    return Promise.race([pedido, prazo]).then(
+      function (r) {
+        clearTimeout(timer);
+        r.seg = (Date.now() - inicio) / 1000;
+        return r;
+      },
+      function (e) {
+        clearTimeout(timer);
+        return { status: 0, erro: String((e && e.message) || e), corpo: "", seg: (Date.now() - inicio) / 1000 };
+      }
+    );
+  }
+
+  function cabecalhosApi() {
+    return { "Content-Type": "application/json", Authorization: "Bearer " + storage.chave };
+  }
+
+  function descreverDiag(nome, r, mostrarResposta) {
+    var linha = nome + ": " + (r.erro ? "FALHA (" + r.erro + ")" : "HTTP " + r.status) + " em " + r.seg.toFixed(1) + "s";
+    if (!r.erro && (r.status < 200 || r.status >= 300)) {
+      linha += " — " + trecho(r.corpo);
+    } else if (!r.erro && mostrarResposta) {
+      try {
+        linha += " — resposta: " + trecho(JSON.parse(r.corpo).choices[0].message.content);
+      } catch (e) {
+        linha += " — resposta em formato inesperado";
+      }
+    }
+    log("DIAG", linha);
+    return linha;
+  }
+
+  // 1) So a conexao: pede a lista de modelos (sem gerar texto).
+  function diagConexao() {
+    var base = String(storage.url).replace(/\/chat\/completions\/?$/, "/models");
+    return pedirSimples(base, { method: "GET", headers: cabecalhosApi() }, 30000).then(function (r) {
+      return descreverDiag("Conexão (lista de modelos)", r, false);
+    });
+  }
+
+  // 2) Uma chamada minima ao modelo, sem o nosso prompt grande.
+  function diagMinima() {
+    var corpo = JSON.stringify({ model: storage.modelo, messages: [{ role: "user", content: "Responda apenas: ok" }] });
+    return pedirSimples(storage.url, { method: "POST", headers: cabecalhosApi(), body: corpo }, 30000).then(function (r) {
+      return descreverDiag("Chamada mínima", r, true);
+    });
   }
 
   // ---------- ligacao com o Discord ----------
@@ -689,7 +771,7 @@
     var texto = R.useRef("fui a escola ontem e comprei pao leite e ovos");
     var res = R.useState(null);
     var ocupado = R.useState(false);
-    function rodar() {
+    function rodar(limiteMs) {
       if (ocupado[0]) return;
       var p = problemas();
       if (p.length) {
@@ -699,7 +781,7 @@
       var entrada = texto.current;
       ocupado[1](true);
       res[1](null);
-      processar(entrada).then(function (r) {
+      processar(entrada, limiteMs).then(function (r) {
         registrarResultado("teste", entrada, r);
         res[1](r);
         ocupado[1](false);
@@ -724,7 +806,21 @@
       h(
         Linha,
         {},
-        h(Botao, { testID: "btn-testar", texto: ocupado[0] ? "Testando..." : "Testar correção", aoTocar: rodar })
+        h(Botao, {
+          testID: "btn-testar",
+          texto: ocupado[0] ? "Testando..." : "Testar correção",
+          aoTocar: function () {
+            rodar(undefined);
+          },
+        }),
+        h(Botao, {
+          testID: "btn-testar-30",
+          secundario: true,
+          texto: "Testar com limite de 30 s",
+          aoTocar: function () {
+            rodar(30000);
+          },
+        })
       ),
       r && r.aviso ? h(Texto, { mudo: true }, r.aviso) : null,
       r && !r.aviso
@@ -736,6 +832,44 @@
             h(Texto, { mudo: true, pequeno: true }, "Resposta bruta da IA: " + (r.bruto || "(sem resposta)"))
           )
         : null
+    );
+  }
+
+  function GrupoDiagnostico() {
+    var R = metro.common.React;
+    var linhas = R.useState([]);
+    var ocupado = R.useState(false);
+    function rodar(funcao) {
+      if (ocupado[0]) return;
+      var p = problemas();
+      if (p.length) {
+        linhas[1](linhas[0].concat(["Antes de testar: " + p.join(", ") + "."]));
+        return;
+      }
+      ocupado[1](true);
+      funcao().then(function (linha) {
+        linhas[1](function (antes) {
+          return antes.concat([linha]);
+        });
+        ocupado[1](false);
+      });
+    }
+    return h(
+      Grupo,
+      { id: "diag", titulo: "Diagnóstico de velocidade", aberto: false },
+      h(
+        Texto,
+        { mudo: true, pequeno: true },
+        "Se a conexão for rápida e a chamada mínima for lenta, o lento é o modelo do provedor. Se as duas forem lentas, é a rede. Cada teste espera até 30 s."
+      ),
+      h(
+        Linha,
+        {},
+        h(Botao, { testID: "btn-diag-conexao", texto: ocupado[0] ? "Aguarde..." : "Testar conexão", aoTocar: function () { rodar(diagConexao); } }),
+        h(Botao, { testID: "btn-diag-minima", secundario: true, texto: "Chamada mínima", aoTocar: function () { rodar(diagMinima); } }),
+        h(Botao, { testID: "btn-diag-limpar", secundario: true, texto: "Limpar", aoTocar: function () { linhas[1]([]); } })
+      ),
+      h(Texto, { mono: true, pequeno: true }, linhas[0].length ? linhas[0].join("\n") : "(nenhum teste ainda)")
     );
   }
 
@@ -834,6 +968,7 @@
       ),
       h(GrupoApi, {}),
       h(GrupoTeste, {}),
+      h(GrupoDiagnostico, {}),
       h(GrupoEstatisticas, {}),
       h(GrupoLogs, {})
     );
