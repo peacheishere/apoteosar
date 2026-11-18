@@ -8,7 +8,7 @@
   var commands = vendetta.commands;
   var showToast = vendetta.ui.toasts.showToast;
 
-  var VERSAO = "0.4";
+  var VERSAO = "0.5";
   var LIMITE_CARACTERES = 1500;
   // Trechos que a IA nunca ve nem mexe: codigo, mencoes (<@id>, <#id>, <@&id>), @everyone/@here, @nome,
   // #canal, emojis (do Discord e unicode), links (com ou sem http), e-mails, numeros/horas/datas.
@@ -41,6 +41,8 @@
   var ultimaEntrada = "";
   var ultimaResposta = "";
   var ultimaDuracao = 0;
+  var tempos = []; // duracao (s) das ultimas respostas da API
+  var contagem = { ok: 0, recusadas: 0, falhas: 0 };
 
   // ---------- utilidades ----------
 
@@ -66,6 +68,25 @@
     t += ", limite " + limiteSeg() + "s";
     var f = faltando();
     if (f.length) t += " (falta: " + f.join(", ") + ")";
+    return t;
+  }
+
+  function guardarTempo(seg) {
+    tempos.push(seg);
+    if (tempos.length > 50) tempos.shift();
+  }
+
+  function resumo() {
+    var t = "Corrigidas " + contagem.ok + ", recusadas pelo filtro " + contagem.recusadas +
+      ", falhas/tempo esgotado " + contagem.falhas;
+    if (tempos.length) {
+      var soma = 0, max = 0;
+      tempos.forEach(function (x) {
+        soma += x;
+        if (x > max) max = x;
+      });
+      t += " | resposta da IA: média " + (soma / tempos.length).toFixed(1) + "s, máx " + max.toFixed(1) + "s (" + tempos.length + " respostas)";
+    }
     return t;
   }
 
@@ -223,7 +244,9 @@
           }
         }
         var motivo = validar(protegido, resposta, guardados.length);
+        guardarTempo(ultimaDuracao);
         if (motivo) {
+          contagem.recusadas++;
           ultimoMotivo = motivo;
           return texto;
         }
@@ -231,11 +254,13 @@
         guardados.forEach(function (original, i) {
           corrigido = corrigido.split("\u00a7" + i + "\u00a7").join(original);
         });
+        contagem.ok++;
         ultimoMotivo = "ok";
         return corrigido;
       },
       function (erro) {
         ultimaDuracao = (Date.now() - inicio) / 1000;
+        contagem.falhas++;
         ultimoMotivo = String((erro && erro.message) || erro);
         return texto;
       }
@@ -319,6 +344,23 @@
           " (" + ultimaDuracao.toFixed(1) + "s) | crase " + (storage.crase ? "LIGADA" : "desligada")
       );
     });
+    registrar(
+      "correcao_estatisticas",
+      "Mostra tempo médio/máximo da IA e quantas mensagens foram corrigidas, recusadas ou falharam",
+      [opcao("zerar", "Digite sim para zerar as estatísticas")],
+      function (args) {
+        var zerar = (args || []).some(function (a) {
+          return a.name === "zerar" && String(a.value).toLowerCase() === "sim";
+        });
+        if (zerar) {
+          tempos = [];
+          contagem = { ok: 0, recusadas: 0, falhas: 0 };
+          avisar("Estatísticas zeradas");
+          return;
+        }
+        avisar(resumo());
+      }
+    );
     registrar("correcao_crase_ligar", "Liga a crase", [], function () {
       storage.crase = true;
       avisar(estado());
