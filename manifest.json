@@ -3,7 +3,7 @@
   "description": "Corrige acentos, maiúsculas, ponto final e vírgula das suas mensagens antes de enviar, usando uma API de IA. Tudo é configurado no painel do plugin (sem slash commands).",
   "authors": [
     {
-      "name": "Corretor"
+      "name": "apoteosar"
     }
   ],
   "main": "index.js",
