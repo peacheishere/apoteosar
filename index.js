@@ -7,7 +7,7 @@
   var storage = vendetta.plugin.storage;
   var showToast = vendetta.ui.toasts.showToast;
 
-  var VERSAO = "0.8";
+  var VERSAO = "0.9";
   var LIMITE_CARACTERES = 1500;
   var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
   var GEMINI_MODELO = "gemini-3.5-flash-lite";
@@ -19,11 +19,11 @@
       "```[\\s\\S]*?```",
       "`[^`\\n]*`",
       "<[^>\\n]+>",
-      "https?:\\/\\/\\S+",
-      "(?:www\\.)?[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.(?:com|net|org|br|io|gg|me|app|dev|tv|co|ly|to|xyz|info|gov|edu|ai|us|uk|pt|de|fr|es|it|jp|ru|cc|ws|be|link|site|online)\\b(?:[\\/?#]\\S*)?",
+      "https?:\\/\\/[^\\s<>]*[^\\s<>.,;:!?)\\]]",
+      "(?:www\\.)?[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.(?:com|net|org|br|io|gg|me|app|dev|tv|co|ly|to|xyz|info|gov|edu|ai|us|uk|pt|de|fr|es|it|jp|ru|cc|ws|be|link|site|online)\\b(?:[\\/?#][^\\s<>]*[^\\s<>.,;:!?)\\]])?",
       "[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+",
       "@(?:everyone|here)\\b",
-      "@[\\w.]+",
+      "@\\w+(?:\\.\\w+)*",
       "#[\\w-]+",
       ":[A-Za-z0-9_]+:",
       "\\d+(?:[.,:\\/-]\\d+)+",
@@ -36,12 +36,29 @@
   var DE = "áàâãäåéèêëíìîïóòôõöúùûüçñ";
   var PARA = "aaaaaaeeeeiiiiooooouuuucn";
 
+  // Objeto global do app: guarda a instancia ativa do plugin e os logs entre liga/desliga.
+  var G = (function () {
+    try {
+      if (typeof globalThis !== "undefined") return globalThis;
+    } catch (e) {}
+    try {
+      if (typeof global !== "undefined") return global;
+    } catch (e) {}
+    return {};
+  })();
+  var MEU_ID = String(Date.now()) + "-" + String(Math.random()).slice(2);
+  var vivo = false; // falso depois que o plugin e desligado: o patch vira so uma passagem direta
+
   var desfazer = []; // funcoes que desfazem os patches
   var fila = Promise.resolve();
   var pendentes = 0;
+  var emVoo = []; // pedidos a API em andamento (para poder cancelar)
+  var bloqueadoAte = 0; // quando a API avisa que o limite de uso acabou, nao tenta ate esse horario
+  var cache = {}; // correcoes ja validadas (texto protegido => resposta)
+  var cacheChaves = [];
   var tempos = []; // duracao (s) das ultimas respostas da API
   var contagem = { ok: 0, recusadas: 0, falhas: 0 };
-  var logs = []; // ultimos 100 registros (so na memoria; somem ao reiniciar o app)
+  var logs = G.__corretorLogs || (G.__corretorLogs = []); // ultimos 100 registros (sobrevivem ao liga/desliga; somem ao reiniciar o app)
 
   // ---------- logs ----------
 
@@ -85,13 +102,15 @@
     return p;
   }
 
+  // 0 = sem tempo limite (espera a IA responder).
   function limiteSeg() {
-    return Number(storage.limite) || 6;
+    var n = Number(storage.limiteMax);
+    return n > 0 ? n : 0;
   }
 
   function estado() {
     var t = "Corretor v" + VERSAO + " · " + (storage.ligada ? "ligado" : "desligado");
-    t += " · crase " + (storage.crase ? "ligada" : "desligada") + " · limite " + limiteSeg() + "s";
+    t += " · crase " + (storage.crase ? "ligada" : "desligada") + " · limite " + (limiteSeg() ? limiteSeg() + "s" : "sem limite");
     return t;
   }
 
@@ -100,16 +119,22 @@
     return m ? m.length : 0;
   }
 
-  // Texto "comparavel": sem acento, minusculo, sem . , ; : ~ e sem espacos repetidos.
+  // Tira acentos (com ou sem normalize, que pode faltar em alguns motores).
+  function semAcento(s) {
+    try {
+      if (s.normalize) s = s.normalize("NFD");
+    } catch (e) {}
+    return s.replace(/[\u0300-\u036f]/g, "").replace(/[áàâãäåéèêëíìîïóòôõöúùûüçñ]/g, function (c) {
+      return PARA.charAt(DE.indexOf(c));
+    });
+  }
+
+  // Texto "comparavel": sem acento, minusculo, sem . , ; : ~ (viram espaco) e sem espacos repetidos.
   function chave(s) {
-    return s
-      .toLowerCase()
-      .replace(/[áàâãäåéèêëíìîïóòôõöúùûüçñ]/g, function (c) {
-        return PARA.charAt(DE.indexOf(c));
-      })
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[.,;:~]/g, "")
+    return semAcento(s.toLowerCase())
+      .replace(/[.,;:~]/g, " ")
       .replace(/[ \t]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
       .replace(/^\s+|\s+$/g, "");
   }
 
@@ -118,30 +143,33 @@
     if (!t.replace(/\s/g, "")) return "mensagem vazia";
     if (t.length > LIMITE_CARACTERES) return "mensagem muito longa";
     if (/^(s\/|\+:|\/)/.test(t)) return "comando do app (começa com s/, +: ou /)";
+    if (/^\s*(?:k{2,}|(?:ha){2,}h?|(?:he){2,}h?|(?:rs)+)\s*$/i.test(t)) return "só risada";
+    if (Date.now() < bloqueadoAte) {
+      return "API no limite de uso (volta a tentar em " + Math.ceil((bloqueadoAte - Date.now()) / 1000) + "s)";
+    }
     return null;
   }
 
   function montarPrompt() {
     return [
-      "Você é um revisor de mensagens de chat em português. A mensagem foi digitada de qualquer jeito (sem acentos, sem pontuação, sem maiúsculas). Devolva a MESMA mensagem corrigida, fazendo um trabalho COMPLETO nestes três itens, sem deixar nada para trás:",
-      "1) ACENTOS: coloque todos os acentos e cedilhas que as palavras exigem (você, não, amanhã, já, é, está, tá, né, pão, vídeo...). Leia a frase inteira para decidir entre palavras parecidas (e/é, esta/está, ja/já).",
-      "2) MAIÚSCULAS: a primeira letra de cada frase e os nomes próprios (pessoas, lugares, marcas).",
-      "3) PONTUAÇÃO: ponto final no fim de toda frase afirmativa; vírgulas onde a gramática pede (vocativos, listas, orações, expressões como então, porém, né). Você também pode usar dois-pontos (:), ponto e vírgula (;) e til (~) quando fizerem sentido. Só deixe sem ponto final se a frase for CLARAMENTE uma pergunta (nesse caso, sem ponto final e sem interrogação).",
+      "Você revisa mensagens de chat em português do Brasil. O texto foi digitado sem acentos, sem pontuação e sem maiúsculas. Devolva a MESMA mensagem corrigida, mudando SOMENTE estas três coisas:",
+      "1) ACENTOS e cedilha (você, não, amanhã, já, é, está, tá, né, pão). Leia a frase inteira para escolher entre e/é, esta/está, ja/já. Palavras em MAIÚSCULAS também recebem acento (VOCÊ).",
+      "2) MAIÚSCULAS: apenas a primeira letra da mensagem, a primeira letra depois de ponto final, ? ou ! e os nomes próprios (pessoas, lugares, marcas). Depois de vírgula, ponto e vírgula ou dois-pontos a palavra continua minúscula (salvo nome próprio).",
+      "3) PONTUAÇÃO: use ponto final, vírgula, ponto e vírgula (;) e dois-pontos (:) como manda a gramática do português brasileiro; til (~) só quando fizer sentido. O ponto final pode ir no MEIO do texto, separando frases (a próxima começa com maiúscula), e também no fim. Se já houver pontuação no texto e ela estiver errada ou sobrando, REMOVA, TROQUE ou MUDE DE LUGAR. Só deixe sem ponto final se a frase for CLARAMENTE uma pergunta (sem ponto final e sem interrogação).",
+      "CAIXA ALTA: palavras ou trechos que já estão em MAIÚSCULAS (caps lock) ficam em maiúsculas, nunca passe para minúsculas. Se a mensagem inteira está em maiúsculas, devolva-a inteira em maiúsculas (só acentos e pontuação mudam). Nunca ponha em maiúsculas uma palavra que estava minúscula, exceto a letra inicial quando a regra 2 pedir.",
       "PROIBIDO: trocar, remover, adicionar, juntar, separar ou reordenar palavras; corrigir gírias, abreviações (vc, tb, blz, kkk) ou erros de digitação; mudar o tom; adicionar emojis, exclamações ou interrogações; mexer em porque/por que/porquê, mas/mais, a/há.",
       storage.crase ? "Use crase (à, às, àquele) quando a gramática exigir." : "NÃO use crase.",
-      "Se o texto não estiver em português, devolva-o exatamente igual.",
-      "Mantenha as quebras de linha e os marcadores \u00a7número\u00a7 exatamente onde estão.",
+      "Se o texto não estiver em português, devolva-o exatamente igual. Mantenha as quebras de linha e os marcadores \u00a7número\u00a7 exatamente onde estão. Responda somente com o texto final, sem aspas e sem comentários.",
       "EXEMPLOS (entrada => saída):",
       "oi tudo bem com voce => Oi, tudo bem com você",
       "nao sei se vou amanha => Não sei se vou amanhã.",
-      "ta bom entao fechado => Tá bom, então fechado.",
       "comprei pao leite e ovos no mercado => Comprei pão, leite e ovos no mercado.",
-      "vc ja viu o video que o joao mandou => Vc já viu o vídeo que o João mandou",
+      "cheguei em casa agora vou tomar banho depois a gente conversa => Cheguei em casa agora. Vou tomar banho, depois a gente conversa.",
+      "eu, fui ao mercado. e comprei pao => Eu fui ao mercado e comprei pão.",
+      "ta MUITO quente hoje => Tá MUITO quente hoje.",
+      "VOU SAIR AGORA => VOU SAIR AGORA.",
       "mano que loucura isso ne => Mano, que loucura isso, né.",
-      "eu vou sair mais cedo hoje porque tenho consulta => Eu vou sair mais cedo hoje porque tenho consulta.",
-      "valeu => Valeu.",
       "kkkk => kkkk",
-      "Responda somente com o texto final, sem aspas e sem comentários.",
     ].join("\n");
   }
 
@@ -152,16 +180,49 @@
     return t.length > 160 ? t.slice(0, 160) + "…" : t;
   }
 
-  // ---------- chamada da API (com tempo limite) ----------
+  // ---------- chamada da API (sem tempo limite por padrao) ----------
+
+  // Cancela os pedidos em andamento: cada um termina como falha e a mensagem sai sem correcao.
+  function cancelarPendentes(motivo) {
+    var lista = emVoo.slice();
+    lista.forEach(function (item) {
+      try {
+        item.cancelar(motivo);
+      } catch (e) {}
+    });
+    if (lista.length) log("INFO", "cancelados " + lista.length + " pedido(s) em andamento: " + motivo);
+    return lista.length;
+  }
+
+  // A API avisou que o limite de uso acabou: as mensagens saem sem correcao ate ele voltar.
+  function marcarLimite(erro) {
+    var s = Number(erro && erro.espera);
+    var ms = s > 0 && s <= 3600 ? s * 1000 : 60000;
+    bloqueadoAte = Date.now() + ms;
+    log("INFO", "limite da API atingido: mensagens saem sem correção por " + Math.round(ms / 1000) + "s");
+    avisar("Limite da API atingido. Mensagens saem sem correção por " + Math.round(ms / 1000) + "s");
+  }
+
+  function erroHttp(status, corpo, espera) {
+    corpo = corpo || "";
+    var limite = status === 429 || /RESOURCE_EXHAUSTED/.test(corpo);
+    var e = new Error((limite ? "limite da API atingido (HTTP " + status + ")" : "HTTP " + status) + (corpo ? ": " + trecho(corpo) : ""));
+    var m = /retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)/.exec(corpo);
+    e.status = status;
+    e.limiteApi = limite;
+    e.espera = Number(espera) > 0 ? Number(espera) : m ? Math.ceil(Number(m[1])) : 0;
+    return e;
+  }
 
   function chamarApi(texto, limiteOpcional) {
     if (faltando().length) return Promise.reject(new Error("falta configurar: " + faltando().join(", ")));
     if (String(storage.url).indexOf("https://") !== 0) {
       return Promise.reject(new Error("url precisa começar com https://"));
     }
-    var limiteMs = limiteOpcional || limiteSeg() * 1000;
+    var limiteMs = limiteOpcional || limiteSeg() * 1000; // 0 = sem limite
     var controlador = typeof AbortController === "function" ? new AbortController() : null;
-    var timer;
+    var item = { cancelar: null };
+    var timer = null;
 
     var pedido = fetch(storage.url, {
       method: "POST",
@@ -180,35 +241,67 @@
     })
       .then(function (r) {
         if (!r.ok) {
+          var espera = null;
+          try {
+            espera = r.headers && r.headers.get ? r.headers.get("retry-after") : null;
+          } catch (e) {}
           return r.text().then(
             function (corpo) {
-              throw new Error("HTTP " + r.status + ": " + trecho(corpo));
+              throw erroHttp(r.status, corpo, espera);
             },
             function () {
-              throw new Error("HTTP " + r.status);
+              throw erroHttp(r.status, "", espera);
             }
           );
         }
         return r.json();
       })
       .then(function (d) {
-        return d.choices[0].message.content;
+        var c = d && d.choices && d.choices[0];
+        var t = c && c.message && c.message.content;
+        if (typeof t !== "string" || !t) {
+          throw new Error("resposta sem texto" + (c && c.finish_reason ? " (finish_reason: " + c.finish_reason + ")" : ""));
+        }
+        return t;
       });
 
-    var prazo = new Promise(function (_, rejeitar) {
-      timer = setTimeout(function () {
-        if (controlador) controlador.abort();
-        rejeitar(new Error("tempo limite"));
-      }, limiteMs);
+    var cancelamento = new Promise(function (_, rejeitar) {
+      item.cancelar = function (motivo) {
+        try {
+          if (controlador) controlador.abort();
+        } catch (e) {}
+        rejeitar(new Error("cancelada: " + (motivo || "sem motivo")));
+      };
     });
+    emVoo.push(item);
 
-    return Promise.race([pedido, prazo]).then(
+    var corridas = [pedido, cancelamento];
+    if (limiteMs > 0) {
+      corridas.push(
+        new Promise(function (_, rejeitar) {
+          timer = setTimeout(function () {
+            try {
+              if (controlador) controlador.abort();
+            } catch (e) {}
+            rejeitar(new Error("tempo limite"));
+          }, limiteMs);
+        })
+      );
+    }
+
+    function limpar() {
+      if (timer) clearTimeout(timer);
+      var i = emVoo.indexOf(item);
+      if (i >= 0) emVoo.splice(i, 1);
+    }
+
+    return Promise.race(corridas).then(
       function (v) {
-        clearTimeout(timer);
+        limpar();
         return v;
       },
       function (e) {
-        clearTimeout(timer);
+        limpar();
         throw e;
       }
     );
@@ -232,6 +325,82 @@
     return null;
   }
 
+  // ---------- caixa alta: o que o usuario escreveu em MAIUSCULA nunca vira minuscula ----------
+
+  function ehLetra(c) {
+    return c.toLowerCase() !== c.toUpperCase();
+  }
+
+  function ehMaiuscula(c) {
+    return c !== c.toLowerCase();
+  }
+
+  function inicioDeFrase(antes) {
+    return /(^|[.!?]["')\]]*\s+|\n\s*)$/.test(antes);
+  }
+
+  // Depois de validada, ajusta so a caixa das letras (as letras sao as mesmas, so mudam acento e caixa):
+  // 1) letra que estava MAIUSCULA na entrada continua maiuscula (CAPS LOCK e preservado);
+  // 2) palavra de 2+ letras que a IA pos toda em maiuscula sem estar assim na entrada volta para minuscula
+  //    (so a inicial de frase fica maiuscula).
+  function ajustarCaixa(entrada, saida) {
+    var letras = [];
+    var i;
+    for (i = 0; i < entrada.length; i++) {
+      if (ehLetra(entrada.charAt(i))) letras.push(entrada.charAt(i));
+    }
+    var out = "";
+    var k = 0;
+    i = 0;
+    while (i < saida.length) {
+      var c = saida.charAt(i);
+      if (!ehLetra(c)) {
+        out += c;
+        i++;
+        continue;
+      }
+      var ini = i;
+      var k0 = k;
+      while (i < saida.length && ehLetra(saida.charAt(i))) {
+        i++;
+        k++;
+      }
+      var arr = saida.slice(ini, i).split("");
+      var tinhaMaiuscula = false;
+      for (var j = 0; j < arr.length; j++) {
+        var e = letras[k0 + j];
+        if (e === undefined) return saida; // nao alinhou: nao mexe
+        if (ehMaiuscula(e)) {
+          tinhaMaiuscula = true;
+          arr[j] = arr[j].toUpperCase();
+        }
+      }
+      var palavra = arr.join("");
+      if (!tinhaMaiuscula && palavra.length >= 2 && palavra === palavra.toUpperCase()) {
+        palavra = palavra.toLowerCase();
+        if (inicioDeFrase(out)) palavra = palavra.charAt(0).toUpperCase() + palavra.slice(1);
+      }
+      out += palavra;
+    }
+    if (k !== letras.length) return saida;
+    return out;
+  }
+
+  function restaurar(resposta, guardados) {
+    guardados.forEach(function (original, i) {
+      resposta = resposta.split("\u00a7" + i + "\u00a7").join(original);
+    });
+    return resposta;
+  }
+
+  function guardarCache(k, v) {
+    if (cache[k] === undefined) {
+      cacheChaves.push(k);
+      if (cacheChaves.length > 40) delete cache[cacheChaves.shift()];
+    }
+    cache[k] = v;
+  }
+
   // Processa um texto. Nunca rejeita: devolve { final, veredito, bruto, seg }.
   function processar(texto, limiteOpcional) {
     var guardados = [];
@@ -242,12 +411,20 @@
     if (!/[A-Za-z\u00c0-\u00ff]/.test(protegido.replace(MARCADOR, ""))) {
       return Promise.resolve({ final: texto, veredito: "ignorada: sem letras", bruto: "", seg: 0 });
     }
+    var kCache = (storage.crase ? "1|" : "0|") + protegido;
+    if (cache[kCache] !== undefined) {
+      return Promise.resolve({ final: restaurar(cache[kCache], guardados), veredito: "ok (cache)", bruto: cache[kCache], seg: 0 });
+    }
     var inicio = Date.now();
     return chamarApi(protegido, limiteOpcional).then(
       function (resposta) {
         var seg = (Date.now() - inicio) / 1000;
         var bruto = typeof resposta === "string" ? resposta : "";
         if (typeof resposta === "string") {
+          resposta = resposta.replace(/^\s+|\s+$/g, "");
+          try {
+            if (resposta.normalize) resposta = resposta.normalize("NFC");
+          } catch (e) {}
           // Crase desligada: tira a crase que a IA colocou, mas aproveita o resto da correcao.
           if (!storage.crase && contar(/[àÀ]/g, resposta) > contar(/[àÀ]/g, protegido)) {
             resposta = resposta.replace(/à/g, "a").replace(/À/g, "A");
@@ -259,13 +436,13 @@
         }
         var motivo = validar(protegido, resposta, guardados.length);
         if (motivo) return { final: texto, veredito: "recusada: " + motivo, bruto: bruto, seg: seg };
-        var corrigido = resposta.replace(/^\s+|\s+$/g, "");
-        guardados.forEach(function (original, i) {
-          corrigido = corrigido.split("\u00a7" + i + "\u00a7").join(original);
-        });
-        return { final: corrigido, veredito: "ok", bruto: bruto, seg: seg };
+        resposta = ajustarCaixa(protegido, resposta);
+        bloqueadoAte = 0;
+        guardarCache(kCache, resposta);
+        return { final: restaurar(resposta, guardados), veredito: "ok", bruto: bruto, seg: seg };
       },
       function (erro) {
+        if (erro && (erro.limiteApi || erro.status === 429)) marcarLimite(erro);
         return {
           final: texto,
           veredito: "falha: " + String((erro && erro.message) || erro),
@@ -284,7 +461,7 @@
   // Conta nas estatisticas e grava no log.
   function registrarResultado(origem, texto, r) {
     var tipo = "INFO";
-    if (r.veredito === "ok") {
+    if (r.veredito.indexOf("ok") === 0) {
       contagem.ok++;
       tipo = "OK";
     } else if (r.veredito.indexOf("recusada") === 0) {
@@ -407,6 +584,30 @@
 
   // ---------- ligacao com o Discord ----------
 
+  // O plugin so age se esta instancia e a mais recente, esta viva e o app ainda o considera ligado.
+  function ativo() {
+    if (!vivo) return false;
+    if (G.__corretor && G.__corretor.id !== MEU_ID) return false;
+    try {
+      var lista = vendetta.plugins && vendetta.plugins.plugins;
+      var p = lista && vendetta.plugin && lista[vendetta.plugin.id];
+      if (p && p.enabled === false) return false;
+    } catch (e) {}
+    return true;
+  }
+
+  // Desliga tudo: o patch vira passagem direta, pedidos em andamento sao cancelados e o patch e removido.
+  function encerrar() {
+    vivo = false;
+    cancelarPendentes("plugin desligado");
+    desfazer.forEach(function (f) {
+      try {
+        f();
+      } catch (e) {}
+    });
+    desfazer = [];
+  }
+
   function instalarPatch() {
     var Acoes = metro.findByProps("sendMessage", "editMessage");
     if (!Acoes) throw new Error("não achei sendMessage no Discord");
@@ -416,26 +617,42 @@
         var msg = args[1];
         var texto = msg && msg.content;
         var precisa = false;
-        if (storage.ligada && typeof texto === "string" && texto.replace(/\s/g, "")) {
-          var pular = faltando().length ? "falta configurar: " + faltando().join(", ") : motivoPular(texto);
-          if (pular) log("INFO", "[envio] ignorada: " + pular);
-          else precisa = true;
+        try {
+          if (ativo() && storage.ligada && typeof texto === "string" && texto.replace(/\s/g, "")) {
+            var pular = faltando().length ? "falta configurar: " + faltando().join(", ") : motivoPular(texto);
+            if (pular) log("INFO", "[envio] ignorada: " + pular);
+            else precisa = true;
+          }
+        } catch (e) {
+          precisa = false;
         }
         // Mantem a ordem das mensagens: se ha algo na fila, tudo entra na fila.
         if (!precisa && pendentes === 0) return original.apply(self, args);
 
         pendentes++;
         var tarefa = fila.then(function () {
-          var passo = precisa
-            ? processar(texto).then(function (r) {
-                registrarResultado("envio", texto, r);
-                return r.final;
-              })
-            : Promise.resolve(texto);
-          return passo.then(function (novo) {
-            if (novo !== texto) msg.content = novo;
-            return original.apply(self, args);
-          });
+          var passo;
+          try {
+            passo =
+              precisa && ativo()
+                ? processar(texto).then(function (r) {
+                    registrarResultado("envio", texto, r);
+                    return r.final;
+                  })
+                : Promise.resolve(texto);
+          } catch (e) {
+            log("ERRO", "falha inesperada: " + ((e && e.message) || e));
+            passo = Promise.resolve(texto);
+          }
+          return passo
+            .then(null, function (e) {
+              log("ERRO", "falha inesperada: " + ((e && e.message) || e));
+              return texto;
+            })
+            .then(function (novo) {
+              if (novo !== texto) msg.content = novo;
+              return original.apply(self, args);
+            });
         });
         var fim = function () {
           pendentes--;
@@ -444,6 +661,17 @@
         return tarefa;
       })
     );
+  }
+
+  // Abre a conexao com o provedor logo ao ligar (so para a primeira correcao nao pagar o aperto de mao).
+  function aquecer() {
+    try {
+      if (problemas().length) return;
+      var base = String(storage.url).replace(/\/chat\/completions\/?$/, "/models");
+      pedirSimples(base, { method: "GET", headers: cabecalhosApi() }, 15000).then(function (r) {
+        log("INFO", "conexão pré-aquecida: " + (r.erro ? "falhou (" + r.erro + ")" : "HTTP " + r.status) + " em " + r.seg.toFixed(1) + "s");
+      });
+    } catch (e) {}
   }
 
   // ====================== PAINEL DE CONFIGURACAO ======================
@@ -558,6 +786,7 @@
         storage[props.campo] = v;
         s[1](v);
         log("INFO", "configuração: " + props.campo + " = " + v);
+        if (props.aoMudar) props.aoMudar(v);
       },
     });
   }
@@ -751,15 +980,16 @@
       }),
       h(Item, {
         nome: "Tempo limite (segundos)",
-        nota: "De 1 a 30. Se a IA demorar mais que isso, a mensagem sai sem correção.",
+        nota: "0 = sem limite: a mensagem espera a IA responder. Se a API avisar que o limite de uso acabou, a mensagem sai sem correção na hora.",
         corpo: h(Campo, {
           testID: "in-limite",
-          valor: storage.limite,
-          dica: "6",
+          valor: storage.limiteMax,
+          dica: "0",
           teclado: "numeric",
           aoMudar: function (t) {
-            var n = Number(String(t).replace(",", "."));
-            if (n >= 1 && n <= 30) storage.limite = n;
+            var s = String(t).trim().replace(",", ".");
+            var n = Number(s);
+            if (s !== "" && n >= 0 && n <= 300) storage.limiteMax = n;
           },
         }),
       })
@@ -816,7 +1046,7 @@
         h(Botao, {
           testID: "btn-testar-30",
           secundario: true,
-          texto: "Testar com limite de 30 s",
+          texto: "Testar (espera até 30 s)",
           aoTocar: function () {
             rodar(30000);
           },
@@ -928,7 +1158,7 @@
           secundario: true,
           texto: "Limpar logs",
           aoTocar: function () {
-            logs = [];
+            logs.length = 0;
             forcar[1](forcar[0] + 1);
             avisar("Logs limpos");
           },
@@ -958,12 +1188,35 @@
         h(Item, {
           nome: "Correção ligada",
           nota: "Corrige acentos, maiúsculas e pontuação antes de enviar. Desligado, as mensagens saem como digitadas.",
-          lado: h(Interruptor, { campo: "ligada", testID: "sw-ligada" }),
+          lado: h(Interruptor, {
+            campo: "ligada",
+            testID: "sw-ligada",
+            aoMudar: function (v) {
+              if (!v) cancelarPendentes("correção desligada no painel");
+            },
+          }),
         }),
         h(Item, {
           nome: "Permitir crase",
           nota: "A IA pode usar crase (à, às). Desligado, ela nunca usa.",
           lado: h(Interruptor, { campo: "crase", testID: "sw-crase" }),
+        }),
+        h(Item, {
+          nome: "Mensagem demorando?",
+          nota: "Sem tempo limite, a mensagem espera a IA responder. Este botão envia agora, sem correção, tudo o que estiver esperando.",
+          corpo: h(
+            Linha,
+            {},
+            h(Botao, {
+              testID: "btn-cancelar",
+              secundario: true,
+              texto: "Enviar sem correção agora",
+              aoTocar: function () {
+                var n = cancelarPendentes("cancelado no painel");
+                avisar(n ? "Enviando sem correção" : "Nada esperando");
+              },
+            })
+          ),
         })
       ),
       h(GrupoApi, {}),
@@ -976,26 +1229,36 @@
 
   return {
     onLoad: function () {
+      // Se sobrou uma instancia anterior (reinstalacao sem reiniciar o app), desliga o patch dela primeiro.
+      try {
+        if (G.__corretor && typeof G.__corretor.desligar === "function") {
+          G.__corretor.desligar();
+          log("INFO", "instância anterior do plugin removida");
+        }
+      } catch (e) {}
+      G.__corretor = { id: MEU_ID, desligar: encerrar };
+      vivo = true;
       if (storage.ligada === undefined) storage.ligada = true;
       if (storage.crase === undefined) storage.crase = false;
-      if (storage.limite === undefined) storage.limite = 6;
+      if (storage.limiteMax === undefined) storage.limiteMax = 0; // 0 = sem tempo limite
       if (storage.logTexto === undefined) storage.logTexto = true;
       log("INFO", "plugin carregado (v" + VERSAO + ")");
       try {
         instalarPatch(); // se falhar, o plugin se desliga e avisa
         log("INFO", "patch de envio instalado");
       } catch (e) {
+        vivo = false;
         log("ERRO", "não consegui instalar o patch de envio: " + (e && e.message));
         throw e;
       }
+      aquecer();
     },
     onUnload: function () {
-      desfazer.forEach(function (f) {
-        try {
-          f();
-        } catch (e) {}
-      });
-      desfazer = [];
+      log("INFO", "plugin desligado (onUnload chamado)");
+      encerrar();
+      try {
+        if (G.__corretor && G.__corretor.id === MEU_ID) G.__corretor = null;
+      } catch (e) {}
     },
     settings: Painel,
   };
