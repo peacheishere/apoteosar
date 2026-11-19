@@ -1,11 +1,11 @@
 {
   "name": "Grammify",
-  "description": "Fixes accents, capitalization, periods, commas and crases in your messages before sending them, using an AI API.",
+  "description": "Corrige acentos, maiúsculas, ponto final, vírgula e crases das suas mensagens antes de enviar, usando uma API de IA.",
   "authors": [
     {
       "name": "apoteosar"
     }
   ],
   "main": "index.js",
-  "hash": "0dbc7a922f29a9ff159f92408e643692d4cb9e78db0efe2c413ce539d56ff519"
+  "hash": "ec13b6af93fae05314059cb968f620869aaf1e7d2f0f0ca25be9cd8121b91b87"
 }

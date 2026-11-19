@@ -6,12 +6,12 @@
   var storage = vendetta.plugin.storage;
   var showToast = vendetta.ui.toasts.showToast;
 
-  var NAME = "Grammify";
-  var MAX_CHARS = 1500;
+  var NOME = "Grammify";
+  var LIMITE_CARACTERES = 1500;
   var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-  var GEMINI_MODEL = "gemini-3.5-flash-lite";
+  var GEMINI_MODELO = "gemini-3.5-flash-lite";
 
-  var PROTECT = new RegExp(
+  var PROTEGER = new RegExp(
     [
       "```[\\s\\S]*?```",
       "`[^`\\n]*`",
@@ -29,27 +29,30 @@
     ].join("|"),
     "gi"
   );
-  var MARKER = /\u00a7\d+\u00a7/g;
-  var TOKEN = new RegExp("[^\\s!-\\/:-@\\[-`{-~]+", "g");
-  var GAP_CHAR = /[\s.,;:~]/;
-  var ACCENTED = "áàâãäåéèêëíìîïóòôõöúùûüçñ";
-  var PLAIN = "aaaaaaeeeeiiiiooooouuuucn";
+  var MARCADOR = /\u00a7\d+\u00a7/g;
+  var PALAVRA = new RegExp("[^\\s!-\\/:-@\\[-`{-~]+", "g");
+  var CHAR_ENTRE = /[\s.,;:~]/;
+  var COM_ACENTO = "áàâãäåéèêëíìîïóòôõöúùûüçñ";
+  var SEM_ACENTO = "aaaaaaeeeeiiiiooooouuuucn";
 
   var PROMPT = [
-    "You proofread chat messages written in Brazilian Portuguese. The text was typed without accents, punctuation or capital letters. Return the SAME message, corrected. You may change ONLY these things:",
-    "1) Accents, cedilla and crase (à, às, àquele), following Brazilian Portuguese grammar. Read the whole sentence to choose between e/é, esta/está, ja/já, a/à. Words in ALL CAPS also get accents (VOCÊ).",
-    "2) Capital letters: only the first letter of the message, the first letter after a period, question mark or exclamation mark, and proper nouns (people, places, brands). After a comma, semicolon or colon the next word stays lowercase unless it is a proper noun.",
-    "3) Punctuation: use periods, commas, semicolons and colons as Brazilian Portuguese grammar requires; use a tilde (~) only when it fits. A period may go in the MIDDLE of the text to separate sentences (the next sentence starts with a capital letter) as well as at the end. If the text already has punctuation that is wrong or unnecessary, REMOVE, REPLACE or MOVE it. Leave out the final period only when the sentence is clearly a question (no period and no question mark).",
-    "ALL CAPS: words or passages the user already wrote in capitals stay in capitals, never lowercase them. If the whole message is in capitals, return it entirely in capitals (only accents and punctuation change). Never capitalize a word that was lowercase, except the initial letter when rule 2 asks for it.",
-    "FORBIDDEN: changing, removing, adding, joining, splitting or reordering words; fixing slang, abbreviations (vc, tb, blz, kkk) or typos; changing the tone; adding emojis, exclamation marks, question marks or any symbol other than . , ; : ~ ; touching porque/por que/porquê, mas/mais, a/há. Question marks and exclamation marks already in the text stay exactly where they are.",
-    "If the text is not Portuguese, return it unchanged. Keep line breaks and the \u00a7number\u00a7 markers exactly where they are. Reply with the final text only, no quotes and no comments.",
-    "EXAMPLES (input => output):",
+    "Você revisa mensagens de chat em português do Brasil. O texto foi digitado sem acentos, sem pontuação e sem maiúsculas. Devolva a MESMA mensagem corrigida, mudando SOMENTE estas três coisas:",
+    "1) ACENTOS, cedilha e crase (à, às, àquele), conforme a gramática do português brasileiro. Leia a frase inteira para escolher entre e/é, esta/está, ja/já, a/à. Palavras em MAIÚSCULAS também recebem acento (VOCÊ).",
+    "2) MAIÚSCULAS: apenas a primeira letra da mensagem, a primeira letra depois de ponto final, ? ou ! e os nomes próprios (pessoas, lugares, marcas). Depois de vírgula, ponto e vírgula ou dois-pontos a palavra continua minúscula (salvo nome próprio).",
+    "3) PONTUAÇÃO: use ponto final, vírgula, ponto e vírgula (;) e dois-pontos (:) como manda a gramática do português brasileiro; til (~) só quando fizer sentido. O ponto final pode ir no MEIO do texto, separando frases (a próxima começa com maiúscula), e também no fim. Se já houver pontuação errada ou sobrando, REMOVA, TROQUE ou MUDE DE LUGAR. Só deixe sem ponto final se a frase for CLARAMENTE uma pergunta (sem ponto final e sem interrogação).",
+    "CAIXA ALTA: palavras ou trechos que já estão em MAIÚSCULAS (caps lock) ficam em maiúsculas, nunca passe para minúsculas. Se a mensagem inteira está em maiúsculas, devolva-a inteira em maiúsculas (só acentos e pontuação mudam). Nunca ponha em maiúsculas uma palavra que estava minúscula, exceto a letra inicial quando a regra 2 pedir.",
+    "OUTRO IDIOMA: se a frase é em português mas tem uma ou mais palavras em inglês (ou outro idioma), mesmo no meio ou no fim, trate a frase como português: corrija o resto normalmente e coloque a pontuação, inclusive o ponto final. Deixe as palavras estrangeiras exatamente como estão (não traduza, não acentue, não mude a caixa). Só devolva o texto igual se a mensagem INTEIRA não estiver em português.",
+    "PROIBIDO: trocar, remover, adicionar, juntar, separar ou reordenar palavras; corrigir gírias, abreviações (vc, tb, blz, kkk) ou erros de digitação; mudar o tom; adicionar emojis, exclamações, interrogações ou qualquer símbolo que não seja . , ; : ~ ; mexer em porque/por que/porquê, mas/mais, a/há. Interrogações e exclamações que já estão no texto ficam exatamente onde estão.",
+    "Mantenha as quebras de linha e os marcadores \u00a7número\u00a7 exatamente onde estão. Responda somente com o texto final, sem aspas e sem comentários.",
+    "EXEMPLOS (entrada => saída):",
     "oi tudo bem com voce => Oi, tudo bem com você",
     "nao sei se vou amanha => Não sei se vou amanhã.",
     "comprei pao leite e ovos no mercado => Comprei pão, leite e ovos no mercado.",
     "cheguei em casa agora vou tomar banho depois a gente conversa => Cheguei em casa agora. Vou tomar banho, depois a gente conversa.",
     "eu, fui ao mercado. e comprei pao => Eu fui ao mercado e comprei pão.",
     "fui a escola hoje => Fui à escola hoje.",
+    "eu amei esse filme foi muito good => Eu amei esse filme, foi muito good.",
+    "vou comprar um mouse novo na loja hoje => Vou comprar um mouse novo na loja hoje.",
     "ta MUITO quente hoje => Tá MUITO quente hoje.",
     "VOU SAIR AGORA => VOU SAIR AGORA.",
     "ENTAO VOCE NAO VAI => ENTÃO, VOCÊ NÃO VAI.",
@@ -66,128 +69,129 @@
     } catch (e) {}
     return {};
   })();
-  var instanceId = String(Date.now()) + "-" + String(Math.random()).slice(2);
-  var alive = false;
-  var undoList = [];
-  var queue = Promise.resolve();
-  var pending = 0;
-  var inFlight = [];
-  var blockedUntil = 0;
-  var lastToast = 0;
+  var idInstancia = String(Date.now()) + "-" + String(Math.random()).slice(2);
+  var vivo = false;
+  var desfazer = [];
+  var fila = Promise.resolve();
+  var pendentes = 0;
+  var emVoo = [];
+  var bloqueadoAte = 0;
+  var ultimoAviso = 0;
   var cache = {};
-  var cacheKeys = [];
+  var chavesCache = [];
 
-  function toast(text) {
+  function avisar(texto) {
     try {
-      showToast(text);
+      showToast(texto);
     } catch (e) {}
   }
 
-  function missing() {
-    return ["apiUrl", "apiKey", "model"].filter(function (k) {
+  function faltando() {
+    return ["url", "chave", "modelo"].filter(function (k) {
       return !storage[k];
     });
   }
 
-  function isConfigured() {
-    return missing().length === 0 && String(storage.apiUrl).indexOf("https://") === 0;
+  function configurado() {
+    return faltando().length === 0 && String(storage.url).indexOf("https://") === 0;
   }
 
-  function count(re, s) {
+  function contar(re, s) {
     var m = s.match(re);
     return m ? m.length : 0;
   }
 
-  function stripAccents(s) {
+  function tirarAcentos(s) {
     try {
       if (s.normalize) s = s.normalize("NFD");
     } catch (e) {}
     return s.replace(/[\u0300-\u036f]/g, "").replace(/[áàâãäåéèêëíìîïóòôõöúùûüçñ]/g, function (c) {
-      return PLAIN.charAt(ACCENTED.indexOf(c));
+      return SEM_ACENTO.charAt(COM_ACENTO.indexOf(c));
     });
   }
 
-  function wordKey(s) {
-    return stripAccents(s.toLowerCase());
+  function chavePalavra(s) {
+    return tirarAcentos(s.toLowerCase());
   }
 
-  function skipReason(text) {
-    if (!text.replace(/\s/g, "")) return "empty";
-    if (text.length > MAX_CHARS) return "too long";
-    if (/^(s\/|\+:|\/)/.test(text)) return "app command";
-    if (/^\s*(?:k{2,}|(?:ha){2,}h?|(?:he){2,}h?|(?:rs)+)\s*$/i.test(text)) return "laughter";
-    if (Date.now() < blockedUntil) return "api limit";
+  function motivoPular(texto) {
+    if (!texto.replace(/\s/g, "")) return "vazia";
+    if (texto.length > LIMITE_CARACTERES) return "muito longa";
+    if (/^(s\/|\+:|\/)/.test(texto)) return "comando do app";
+    if (/^\s*(?:k{2,}|(?:ha){2,}h?|(?:he){2,}h?|(?:rs)+)\s*$/i.test(texto)) return "risada";
+    if (Date.now() < bloqueadoAte) return "limite da API";
     return null;
   }
 
-  function cancelPending() {
-    var list = inFlight.slice();
-    list.forEach(function (item) {
+  function cancelarPendentes() {
+    var lista = emVoo.slice();
+    lista.forEach(function (item) {
       try {
-        item.cancel();
+        item.cancelar();
       } catch (e) {}
     });
-    return list.length;
+    return lista.length;
   }
 
-  function markLimit(err) {
-    var s = Number(err && err.wait);
+  function marcarLimite(erro) {
+    var s = Number(erro && erro.espera);
     var ms = s > 0 && s <= 3600 ? s * 1000 : 60000;
-    blockedUntil = Date.now() + ms;
-    toast(NAME + ": API limit reached, sending without correction for " + Math.round(ms / 1000) + "s");
+    bloqueadoAte = Date.now() + ms;
+    avisar(NOME + ": limite da API atingido, enviando sem correção por " + Math.round(ms / 1000) + "s");
   }
 
-  function notifyFailure(err) {
-    var reason = String((err && err.message) || err);
-    if (reason === "cancelled") return;
-    var now = Date.now();
-    if (now - lastToast < 8000) return;
-    lastToast = now;
-    toast(NAME + ": sent as typed (" + reason.slice(0, 40) + ")");
+  function avisarFalha(erro) {
+    var motivo = String((erro && erro.message) || erro);
+    if (motivo === "cancelada") return;
+    var agora = Date.now();
+    if (agora - ultimoAviso < 8000) return;
+    ultimoAviso = agora;
+    avisar(NOME + ": enviada como digitada (" + motivo.slice(0, 40) + ")");
   }
 
-  function httpError(status, body, retryAfter) {
-    body = body || "";
-    var limited = status === 429 || /RESOURCE_EXHAUSTED/.test(body);
-    var e = new Error(limited ? "API limit reached (HTTP " + status + ")" : "HTTP " + status);
-    var m = /retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)/.exec(body);
-    e.rateLimited = limited;
-    e.wait = Number(retryAfter) > 0 ? Number(retryAfter) : m ? Math.ceil(Number(m[1])) : 0;
+  function erroHttp(status, corpo, depoisDe) {
+    corpo = corpo || "";
+    var limite = status === 429 || /RESOURCE_EXHAUSTED/.test(corpo);
+    var e = new Error(limite ? "limite da API atingido (HTTP " + status + ")" : "HTTP " + status);
+    var m = /retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)/.exec(corpo);
+    e.status = status;
+    e.limiteApi = limite;
+    e.espera = Number(depoisDe) > 0 ? Number(depoisDe) : m ? Math.ceil(Number(m[1])) : 0;
     return e;
   }
 
-  function callApi(text) {
-    if (!isConfigured()) return Promise.reject(new Error("not configured"));
-    var controller = typeof AbortController === "function" ? new AbortController() : null;
-    var entry = { cancel: null };
+  function enviarPedido(texto) {
+    if (!configurado()) return Promise.reject(new Error("não configurado"));
+    var controlador = typeof AbortController === "function" ? new AbortController() : null;
+    var item = { cancelar: null };
 
-    var request = fetch(storage.apiUrl, {
+    var pedido = fetch(storage.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + storage.apiKey,
+        Authorization: "Bearer " + storage.chave,
       },
       body: JSON.stringify({
-        model: storage.model,
+        model: storage.modelo,
         messages: [
           { role: "system", content: PROMPT },
-          { role: "user", content: text },
+          { role: "user", content: texto },
         ],
       }),
-      signal: controller ? controller.signal : undefined,
+      signal: controlador ? controlador.signal : undefined,
     })
       .then(function (r) {
         if (!r.ok) {
-          var wait = null;
+          var espera = null;
           try {
-            wait = r.headers && r.headers.get ? r.headers.get("retry-after") : null;
+            espera = r.headers && r.headers.get ? r.headers.get("retry-after") : null;
           } catch (e) {}
           return r.text().then(
-            function (body) {
-              throw httpError(r.status, body, wait);
+            function (corpo) {
+              throw erroHttp(r.status, corpo, espera);
             },
             function () {
-              throw httpError(r.status, "", wait);
+              throw erroHttp(r.status, "", espera);
             }
           );
         }
@@ -196,276 +200,290 @@
       .then(function (d) {
         var c = d && d.choices && d.choices[0];
         var t = c && c.message && c.message.content;
-        if (typeof t !== "string" || !t) throw new Error("empty reply");
+        if (typeof t !== "string" || !t) throw new Error("resposta vazia");
         return t;
       });
 
-    var cancelled = new Promise(function (_, reject) {
-      entry.cancel = function () {
+    var cancelada = new Promise(function (_, rejeitar) {
+      item.cancelar = function () {
         try {
-          if (controller) controller.abort();
+          if (controlador) controlador.abort();
         } catch (e) {}
-        reject(new Error("cancelled"));
+        rejeitar(new Error("cancelada"));
       };
     });
-    inFlight.push(entry);
+    emVoo.push(item);
 
-    function done() {
-      var i = inFlight.indexOf(entry);
-      if (i >= 0) inFlight.splice(i, 1);
+    function fim() {
+      var i = emVoo.indexOf(item);
+      if (i >= 0) emVoo.splice(i, 1);
     }
 
-    return Promise.race([request, cancelled]).then(
+    return Promise.race([pedido, cancelada]).then(
       function (v) {
-        done();
+        fim();
         return v;
       },
       function (e) {
-        done();
+        fim();
         throw e;
       }
     );
   }
 
-  function splitText(text) {
-    var tokens = [];
-    var gaps = [];
-    var last = 0;
+  function chamarApi(texto) {
+    return enviarPedido(texto).then(null, function (e) {
+      if (e && e.status === 503 && vivo) {
+        return new Promise(function (resolver) {
+          setTimeout(resolver, 700);
+        }).then(function () {
+          if (!vivo) throw e;
+          return enviarPedido(texto);
+        });
+      }
+      throw e;
+    });
+  }
+
+  function dividirTexto(texto) {
+    var palavras = [];
+    var entres = [];
+    var ultimo = 0;
     var m;
-    TOKEN.lastIndex = 0;
-    while ((m = TOKEN.exec(text)) !== null) {
-      gaps.push(text.slice(last, m.index));
-      tokens.push(m[0]);
-      last = m.index + m[0].length;
+    PALAVRA.lastIndex = 0;
+    while ((m = PALAVRA.exec(texto)) !== null) {
+      entres.push(texto.slice(ultimo, m.index));
+      palavras.push(m[0]);
+      ultimo = m.index + m[0].length;
     }
-    gaps.push(text.slice(last));
-    return { tokens: tokens, gaps: gaps };
+    entres.push(texto.slice(ultimo));
+    return { palavras: palavras, entres: entres };
   }
 
-  function mergeGap(inGap, outGap, leading) {
-    var wanted = inGap.replace(/[\s.,;:~]/g, "");
+  function juntarEntre(entreIn, entreOut, inicio) {
+    var desejados = entreIn.replace(/[\s.,;:~]/g, "");
     var pos = 0;
-    var res = "";
-    var dropped = false;
-    for (var i = 0; i < outGap.length; i++) {
-      var ch = outGap.charAt(i);
-      if (GAP_CHAR.test(ch)) res += ch;
-      else if (pos < wanted.length && ch === wanted.charAt(pos)) {
-        res += ch;
+    var resultadoGap = "";
+    var removeu = false;
+    for (var i = 0; i < entreOut.length; i++) {
+      var ch = entreOut.charAt(i);
+      if (CHAR_ENTRE.test(ch)) resultadoGap += ch;
+      else if (pos < desejados.length && ch === desejados.charAt(pos)) {
+        resultadoGap += ch;
         pos++;
-      } else dropped = true;
+      } else removeu = true;
     }
-    if (pos < wanted.length) return inGap;
-    if (dropped) res = res.replace(/[ \t]+/g, " ").replace(/ +([.,;:~])/g, "$1");
-    res = res.replace(/([?!])\.+/g, "$1");
-    if (count(/\n/g, res) !== count(/\n/g, inGap)) return inGap;
-    if (/\s/.test(inGap) && !/\s/.test(res)) return inGap;
-    var marks = count(/[.,;:~]/g, res);
-    var marksIn = count(/[.,;:~]/g, inGap);
-    if (marks > Math.max(3, marksIn)) return inGap;
-    if (leading && marks > marksIn) return inGap;
-    return res;
+    if (pos < desejados.length) return entreIn;
+    if (removeu) resultadoGap = resultadoGap.replace(/[ \t]+/g, " ").replace(/ +([.,;:~])/g, "$1");
+    resultadoGap = resultadoGap.replace(/([?!])\.+/g, "$1");
+    if (contar(/\n/g, resultadoGap) !== contar(/\n/g, entreIn)) return entreIn;
+    if (/\s/.test(entreIn) && !/\s/.test(resultadoGap)) return entreIn;
+    var sinais = contar(/[.,;:~]/g, resultadoGap);
+    var sinaisIn = contar(/[.,;:~]/g, entreIn);
+    if (sinais > Math.max(3, sinaisIn)) return entreIn;
+    if (inicio && sinais > sinaisIn) return entreIn;
+    return resultadoGap;
   }
 
-  function mergeReply(input, reply) {
-    if (typeof reply !== "string") return null;
-    reply = reply.replace(/^\s+|\s+$/g, "");
+  function juntarResposta(entrada, resposta) {
+    if (typeof resposta !== "string") return null;
+    resposta = resposta.replace(/^\s+|\s+$/g, "");
     try {
-      if (reply.normalize) reply = reply.normalize("NFC");
+      if (resposta.normalize) resposta = resposta.normalize("NFC");
     } catch (e) {}
-    var a = splitText(input);
-    var b = splitText(reply);
-    if (!b.tokens.length || a.tokens.length !== b.tokens.length) return null;
-    var changed = 0;
-    var words = [];
-    for (var i = 0; i < a.tokens.length; i++) {
-      var original = a.tokens[i];
-      var fixed = b.tokens[i];
-      if (wordKey(fixed) === wordKey(original)) {
-        if (/^porque$/i.test(original)) fixed = fixed.replace(/ê/g, "e").replace(/Ê/g, "E");
-        words.push(fixed);
+    var a = dividirTexto(entrada);
+    var b = dividirTexto(resposta);
+    if (!b.palavras.length || a.palavras.length !== b.palavras.length) return null;
+    var trocadas = 0;
+    var finais = [];
+    for (var i = 0; i < a.palavras.length; i++) {
+      var original = a.palavras[i];
+      var corrigida = b.palavras[i];
+      if (chavePalavra(corrigida) === chavePalavra(original)) {
+        if (/^porque$/i.test(original)) corrigida = corrigida.replace(/ê/g, "e").replace(/Ê/g, "E");
+        finais.push(corrigida);
       } else {
-        changed++;
-        words.push(original);
+        trocadas++;
+        finais.push(original);
       }
     }
-    if (changed * 3 > words.length) return null;
-    var out = "";
-    for (var j = 0; j < words.length; j++) {
-      out += mergeGap(a.gaps[j], b.gaps[j], j === 0) + words[j];
+    if (trocadas * 3 > finais.length) return null;
+    var resultado = "";
+    for (var j = 0; j < finais.length; j++) {
+      resultado += juntarEntre(a.entres[j], b.entres[j], j === 0) + finais[j];
     }
-    return out + mergeGap(a.gaps[words.length], b.gaps[words.length], false);
+    return resultado + juntarEntre(a.entres[finais.length], b.entres[finais.length], false);
   }
 
-  function isLetter(c) {
+  function ehLetra(c) {
     return c.toLowerCase() !== c.toUpperCase();
   }
 
-  function isUpper(c) {
+  function ehMaiuscula(c) {
     return c !== c.toLowerCase();
   }
 
-  function atSentenceStart(before) {
-    return /(^|[.!?]["')\]]*\s+|\n\s*)$/.test(before);
+  function inicioDeFrase(antes) {
+    return /(^|[.!?]["')\]]*\s+|\n\s*)$/.test(antes);
   }
 
-  function adjustCase(input, output) {
-    var letters = [];
+  function ajustarCaixa(entrada, saida) {
+    var letras = [];
     var i;
-    for (i = 0; i < input.length; i++) {
-      if (isLetter(input.charAt(i))) letters.push(input.charAt(i));
+    for (i = 0; i < entrada.length; i++) {
+      if (ehLetra(entrada.charAt(i))) letras.push(entrada.charAt(i));
     }
-    var out = "";
+    var resultado = "";
     var k = 0;
     i = 0;
-    while (i < output.length) {
-      var c = output.charAt(i);
-      if (!isLetter(c)) {
-        out += c;
+    while (i < saida.length) {
+      var c = saida.charAt(i);
+      if (!ehLetra(c)) {
+        resultado += c;
         i++;
         continue;
       }
-      var start = i;
+      var comeco = i;
       var k0 = k;
-      while (i < output.length && isLetter(output.charAt(i))) {
+      while (i < saida.length && ehLetra(saida.charAt(i))) {
         i++;
         k++;
       }
-      var chars = output.slice(start, i).split("");
-      var hadUpper = false;
-      for (var j = 0; j < chars.length; j++) {
-        var e = letters[k0 + j];
-        if (e === undefined) return output;
-        if (isUpper(e)) {
-          hadUpper = true;
-          chars[j] = chars[j].toUpperCase();
+      var caracteres = saida.slice(comeco, i).split("");
+      var tinhaMaiuscula = false;
+      for (var j = 0; j < caracteres.length; j++) {
+        var e = letras[k0 + j];
+        if (e === undefined) return saida;
+        if (ehMaiuscula(e)) {
+          tinhaMaiuscula = true;
+          caracteres[j] = caracteres[j].toUpperCase();
         }
       }
-      var word = chars.join("");
-      if (!hadUpper && word.length >= 2 && word === word.toUpperCase()) {
-        word = word.toLowerCase();
-        if (atSentenceStart(out)) word = word.charAt(0).toUpperCase() + word.slice(1);
+      var palavra = caracteres.join("");
+      if (!tinhaMaiuscula && palavra.length >= 2 && palavra === palavra.toUpperCase()) {
+        palavra = palavra.toLowerCase();
+        if (inicioDeFrase(resultado)) palavra = palavra.charAt(0).toUpperCase() + palavra.slice(1);
       }
-      out += word;
+      resultado += palavra;
     }
-    if (k !== letters.length) return output;
-    return out;
+    if (k !== letras.length) return saida;
+    return resultado;
   }
 
-  function restore(text, kept) {
-    kept.forEach(function (original, i) {
-      text = text.split("\u00a7" + i + "\u00a7").join(original);
+  function restaurar(texto, guardados) {
+    guardados.forEach(function (original, i) {
+      texto = texto.split("\u00a7" + i + "\u00a7").join(original);
     });
-    return text;
+    return texto;
   }
 
-  function remember(k, v) {
+  function guardarCache(k, v) {
     if (cache[k] === undefined) {
-      cacheKeys.push(k);
-      if (cacheKeys.length > 40) delete cache[cacheKeys.shift()];
+      chavesCache.push(k);
+      if (chavesCache.length > 40) delete cache[chavesCache.shift()];
     }
     cache[k] = v;
   }
 
-  function correct(text) {
-    var lead = /^\s*/.exec(text)[0];
-    var trail = /\s*$/.exec(text)[0];
-    var core = text.slice(lead.length, text.length - trail.length);
-    var kept = [];
-    var masked = core.replace(PROTECT, function (m) {
-      kept.push(m);
-      return "\u00a7" + (kept.length - 1) + "\u00a7";
+  function corrigir(texto) {
+    var abertura = /^\s*/.exec(texto)[0];
+    var fechamento = /\s*$/.exec(texto)[0];
+    var miolo = texto.slice(abertura.length, texto.length - fechamento.length);
+    var guardados = [];
+    var protegido = miolo.replace(PROTEGER, function (m) {
+      guardados.push(m);
+      return "\u00a7" + (guardados.length - 1) + "\u00a7";
     });
-    if (!/[A-Za-z\u00c0-\u00ff]/.test(masked.replace(MARKER, ""))) return Promise.resolve(text);
-    var cacheKey = "k" + masked;
-    if (cache[cacheKey] !== undefined) return Promise.resolve(lead + restore(cache[cacheKey], kept) + trail);
-    return callApi(masked).then(
-      function (reply) {
-        var merged = mergeReply(masked, reply);
-        if (!merged) return text;
-        merged = adjustCase(masked, merged);
-        blockedUntil = 0;
-        remember(cacheKey, merged);
-        return lead + restore(merged, kept) + trail;
+    if (!/[A-Za-z\u00c0-\u00ff]/.test(protegido.replace(MARCADOR, ""))) return Promise.resolve(texto);
+    var chaveCache = "k" + protegido;
+    if (cache[chaveCache] !== undefined) return Promise.resolve(abertura + restaurar(cache[chaveCache], guardados) + fechamento);
+    return chamarApi(protegido).then(
+      function (resposta) {
+        var unido = juntarResposta(protegido, resposta);
+        if (!unido) return texto;
+        unido = ajustarCaixa(protegido, unido);
+        bloqueadoAte = 0;
+        guardarCache(chaveCache, unido);
+        return abertura + restaurar(unido, guardados) + fechamento;
       },
-      function (err) {
-        if (err && err.rateLimited) markLimit(err);
-        else notifyFailure(err);
-        return text;
+      function (erro) {
+        if (erro && erro.limiteApi) marcarLimite(erro);
+        else avisarFalha(erro);
+        return texto;
       }
     );
   }
 
-  function isActive() {
-    if (!alive) return false;
-    if (G.__grammify && G.__grammify.id !== instanceId) return false;
+  function ativo() {
+    if (!vivo) return false;
+    if (G.__grammify && G.__grammify.id !== idInstancia) return false;
     try {
-      var list = vendetta.plugins && vendetta.plugins.plugins;
-      var p = list && vendetta.plugin && list[vendetta.plugin.id];
+      var lista = vendetta.plugins && vendetta.plugins.plugins;
+      var p = lista && vendetta.plugin && lista[vendetta.plugin.id];
       if (p && p.enabled === false) return false;
     } catch (e) {}
     return true;
   }
 
-  function shutdown() {
-    alive = false;
-    cancelPending();
-    undoList.forEach(function (f) {
+  function encerrar() {
+    vivo = false;
+    cancelarPendentes();
+    desfazer.forEach(function (f) {
       try {
         f();
       } catch (e) {}
     });
-    undoList = [];
+    desfazer = [];
   }
 
-  function installPatch() {
-    var actions = metro.findByProps("sendMessage", "editMessage");
-    if (!actions) throw new Error("sendMessage not found");
-    undoList.push(
-      patcher.instead("sendMessage", actions, function (args, original) {
-        var self = this;
+  function instalarPatch() {
+    var acoes = metro.findByProps("sendMessage", "editMessage");
+    if (!acoes) throw new Error("sendMessage não encontrado");
+    desfazer.push(
+      patcher.instead("sendMessage", acoes, function (args, original) {
+        var proprio = this;
         var msg = args[1];
-        var text = msg && msg.content;
-        var needsFix = false;
+        var texto = msg && msg.content;
+        var precisaCorrigir = false;
         try {
-          needsFix = isActive() && !!storage.enabled && typeof text === "string" && isConfigured() && !skipReason(text);
+          precisaCorrigir = ativo() && !!storage.ligada && typeof texto === "string" && configurado() && !motivoPular(texto);
         } catch (e) {
-          needsFix = false;
+          precisaCorrigir = false;
         }
-        if (!needsFix && pending === 0) return original.apply(self, args);
+        if (!precisaCorrigir && pendentes === 0) return original.apply(proprio, args);
 
-        pending++;
-        var task = queue.then(function () {
-          var step;
+        pendentes++;
+        var tarefa = fila.then(function () {
+          var passo;
           try {
-            step = needsFix && isActive() ? correct(text) : Promise.resolve(text);
+            passo = precisaCorrigir && ativo() ? corrigir(texto) : Promise.resolve(texto);
           } catch (e) {
-            step = Promise.resolve(text);
+            passo = Promise.resolve(texto);
           }
-          return step
+          return passo
             .then(null, function () {
-              return text;
+              return texto;
             })
-            .then(function (next) {
-              if (next !== text) msg.content = next;
-              return original.apply(self, args);
+            .then(function (novo) {
+              if (novo !== texto) msg.content = novo;
+              return original.apply(proprio, args);
             });
         });
-        var finish = function () {
-          pending--;
+        var terminar = function () {
+          pendentes--;
         };
-        queue = task.then(finish, finish);
-        return task;
+        fila = tarefa.then(terminar, terminar);
+        return tarefa;
       })
     );
   }
 
-  function warmUp() {
+  function aquecer() {
     try {
-      if (!isConfigured()) return;
-      fetch(String(storage.apiUrl).replace(/\/chat\/completions\/?$/, "/models"), {
+      if (!configurado()) return;
+      fetch(String(storage.url).replace(/\/chat\/completions\/?$/, "/models"), {
         method: "GET",
-        headers: { Authorization: "Bearer " + storage.apiKey },
+        headers: { Authorization: "Bearer " + storage.chave },
       }).then(null, function () {});
     } catch (e) {}
   }
@@ -478,49 +496,49 @@
     return metro.common.ReactNative;
   }
 
-  function colors() {
-    var light = false;
-    var store = null;
+  function cores() {
+    var claro = false;
+    var tema = null;
     var meta = null;
     var sc = vendetta.ui.semanticColors || {};
     try {
-      store = metro.findByStoreName("ThemeStore");
-      light = !!store && store.theme === "light";
+      tema = metro.findByStoreName("ThemeStore");
+      claro = !!tema && tema.theme === "light";
     } catch (e) {}
     try {
       meta = metro.findByProps("colors", "meta").meta;
     } catch (e) {}
-    function pick(colorName, dark, lightColor) {
+    function escolher(nomeCor, escuro, corClara) {
       try {
-        var c = meta.resolveSemanticColor(store.theme, sc[colorName]);
+        var c = meta.resolveSemanticColor(tema.theme, sc[nomeCor]);
         if (typeof c === "string" && c) return c;
       } catch (e) {}
-      return light ? lightColor : dark;
+      return claro ? corClara : escuro;
     }
     return {
-      text: pick("TEXT_NORMAL", "#f2f3f5", "#060607"),
-      muted: pick("TEXT_MUTED", "#b5bac1", "#5c5e66"),
-      card: pick("BACKGROUND_SECONDARY", "#2b2d31", "#f2f3f5"),
-      field: pick("BACKGROUND_TERTIARY", "#1e1f22", "#e3e5e8"),
-      border: pick("BACKGROUND_MODIFIER_ACCENT", "#4e5058", "#c4c9ce"),
-      accent: "#5865f2",
-      danger: "#da373c",
-      success: "#23a55a",
+      texto: escolher("TEXT_NORMAL", "#f2f3f5", "#060607"),
+      mudo: escolher("TEXT_MUTED", "#b5bac1", "#5c5e66"),
+      cartao: escolher("BACKGROUND_SECONDARY", "#2b2d31", "#f2f3f5"),
+      campo: escolher("BACKGROUND_TERTIARY", "#1e1f22", "#e3e5e8"),
+      borda: escolher("BACKGROUND_MODIFIER_ACCENT", "#4e5058", "#c4c9ce"),
+      destaque: "#5865f2",
+      perigo: "#da373c",
+      sucesso: "#23a55a",
     };
   }
 
-  function Card(props) {
-    var c = colors();
+  function Cartao(props) {
+    var c = cores();
     return h(
       RN().View,
-      { style: { backgroundColor: c.card, borderRadius: 12, marginBottom: 12, padding: 14 } },
-      props.title ? h(RN().Text, { style: { color: c.text, fontSize: 16, fontWeight: "700" } }, props.title) : null,
+      { style: { backgroundColor: c.cartao, borderRadius: 12, marginBottom: 12, padding: 14 } },
+      props.titulo ? h(RN().Text, { style: { color: c.texto, fontSize: 16, fontWeight: "700" } }, props.titulo) : null,
       props.children
     );
   }
 
-  function Row(props) {
-    var c = colors();
+  function Item(props) {
+    var c = cores();
     return h(
       RN().View,
       { style: { marginTop: 12 } },
@@ -530,49 +548,49 @@
         h(
           RN().View,
           { style: { flex: 1, paddingRight: 12 } },
-          h(RN().Text, { style: { color: c.text, fontSize: 15, fontWeight: "600" } }, props.name),
-          props.note ? h(RN().Text, { style: { color: c.muted, fontSize: 12, marginTop: 2 } }, props.note) : null
+          h(RN().Text, { style: { color: c.texto, fontSize: 15, fontWeight: "600" } }, props.nome),
+          props.nota ? h(RN().Text, { style: { color: c.mudo, fontSize: 12, marginTop: 2 } }, props.nota) : null
         ),
-        props.side || null
+        props.lado || null
       ),
-      props.body || null
+      props.corpo || null
     );
   }
 
-  function Toggle(props) {
-    var c = colors();
-    var s = metro.common.React.useState(!!storage[props.field]);
+  function Interruptor(props) {
+    var c = cores();
+    var s = metro.common.React.useState(!!storage[props.campo]);
     return h(RN().Switch, {
       testID: props.testID,
       value: s[0],
-      trackColor: { true: c.accent },
+      trackColor: { true: c.destaque },
       onValueChange: function (v) {
-        storage[props.field] = v;
+        storage[props.campo] = v;
         s[1](v);
-        if (props.onChange) props.onChange(v);
+        if (props.aoMudar) props.aoMudar(v);
       },
     });
   }
 
-  function Field(props) {
-    var c = colors();
+  function Campo(props) {
+    var c = cores();
     return h(RN().TextInput, {
       testID: props.testID,
-      defaultValue: props.value === undefined || props.value === null ? "" : String(props.value),
-      onChangeText: props.onChange,
-      placeholder: props.hint,
-      placeholderTextColor: c.muted,
-      secureTextEntry: !!props.secret,
+      defaultValue: props.valor === undefined || props.valor === null ? "" : String(props.valor),
+      onChangeText: props.aoMudar,
+      placeholder: props.dica,
+      placeholderTextColor: c.mudo,
+      secureTextEntry: !!props.segredo,
       autoCapitalize: "none",
       autoCorrect: false,
-      keyboardType: props.keyboard || "default",
+      keyboardType: props.teclado || "default",
       style: {
         marginTop: 8,
-        backgroundColor: c.field,
-        color: c.text,
+        backgroundColor: c.campo,
+        color: c.texto,
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: c.border,
+        borderColor: c.borda,
         paddingHorizontal: 10,
         paddingVertical: 8,
         fontSize: 14,
@@ -580,155 +598,155 @@
     });
   }
 
-  function Button(props) {
-    var c = colors();
+  function Botao(props) {
+    var c = cores();
     return h(
       RN().Pressable,
       {
         testID: props.testID,
-        onPress: props.onPress,
+        onPress: props.aoTocar,
         style: {
-          backgroundColor: props.secondary ? c.field : c.accent,
+          backgroundColor: props.secundario ? c.campo : c.destaque,
           paddingVertical: 10,
           paddingHorizontal: 14,
           borderRadius: 8,
           marginRight: 8,
           marginTop: 8,
-          borderWidth: props.secondary ? 1 : 0,
-          borderColor: c.border,
+          borderWidth: props.secundario ? 1 : 0,
+          borderColor: c.borda,
         },
       },
-      h(RN().Text, { style: { color: props.secondary ? c.text : "#ffffff", fontWeight: "600" } }, props.label)
+      h(RN().Text, { style: { color: props.secundario ? c.texto : "#ffffff", fontWeight: "600" } }, props.texto)
     );
   }
 
-  function Panel() {
+  function Painel() {
     var R = metro.common.React;
-    var version = R.useState(0);
-    var reveal = R.useState(false);
-    var c = colors();
-    function refresh() {
-      version[1](function (n) {
+    var versao = R.useState(0);
+    var mostrar = R.useState(false);
+    var c = cores();
+    function atualizar() {
+      versao[1](function (n) {
         return n + 1;
       });
     }
-    var labels = { apiUrl: "URL", apiKey: "API key", model: "model" };
-    var absent = missing().map(function (k) {
-      return labels[k];
+    var rotulos = { url: "URL", chave: "chave da API", modelo: "modelo" };
+    var ausentes = faltando().map(function (k) {
+      return rotulos[k];
     });
-    var v = version[0];
+    var v = versao[0];
     return h(
       RN().ScrollView,
       { keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 12, paddingBottom: 80 } },
       h(
         RN().View,
         { style: { marginBottom: 12, paddingHorizontal: 4 } },
-        h(RN().Text, { style: { color: c.text, fontSize: 18, fontWeight: "700" } }, NAME),
+        h(RN().Text, { style: { color: c.texto, fontSize: 18, fontWeight: "700" } }, NOME),
         h(
           RN().Text,
-          { style: { color: absent.length ? c.danger : c.success, fontSize: 13, marginTop: 4 } },
-          absent.length ? "Missing: " + absent.join(", ") : "Ready"
+          { style: { color: ausentes.length ? c.perigo : c.sucesso, fontSize: 13, marginTop: 4 } },
+          ausentes.length ? "Faltando: " + ausentes.join(", ") : "Pronto"
         )
       ),
       h(
-        Card,
+        Cartao,
         {},
-        h(Row, {
-          name: "Enabled",
-          note: "Fix messages before they are sent.",
-          side: h(Toggle, {
-            field: "enabled",
-            testID: "toggle-enabled",
-            onChange: function (on) {
-              if (!on) cancelPending();
+        h(Item, {
+          nome: "Ativado",
+          nota: "Corrige as mensagens antes de enviar.",
+          lado: h(Interruptor, {
+            campo: "ligada",
+            testID: "alternar-ligada",
+            aoMudar: function (ligado) {
+              if (!ligado) cancelarPendentes();
             },
           }),
         })
       ),
       h(
-        Card,
-        { title: "AI API" },
+        Cartao,
+        { titulo: "API de IA" },
         h(
           RN().View,
           { style: { flexDirection: "row", flexWrap: "wrap" } },
-          h(Button, {
+          h(Botao, {
             testID: "btn-gemini",
-            label: "Use Gemini",
-            onPress: function () {
-              storage.apiUrl = GEMINI_URL;
-              storage.model = GEMINI_MODEL;
-              refresh();
+            texto: "Usar Gemini",
+            aoTocar: function () {
+              storage.url = GEMINI_URL;
+              storage.modelo = GEMINI_MODELO;
+              atualizar();
             },
           })
         ),
-        h(Row, {
-          name: "URL",
-          body: h(Field, {
+        h(Item, {
+          nome: "URL",
+          corpo: h(Campo, {
             key: "url" + v,
-            testID: "in-url",
-            value: storage.apiUrl,
-            hint: "https://...",
-            keyboard: "url",
-            onChange: function (t) {
-              storage.apiUrl = String(t).trim();
-              refresh();
+            testID: "campo-url",
+            valor: storage.url,
+            dica: "https://...",
+            teclado: "url",
+            aoMudar: function (t) {
+              storage.url = String(t).trim();
+              atualizar();
             },
           }),
         }),
-        h(Row, {
-          name: "Model",
-          body: h(Field, {
-            key: "model" + v,
-            testID: "in-model",
-            value: storage.model,
-            hint: GEMINI_MODEL,
-            onChange: function (t) {
-              storage.model = String(t).trim();
-              refresh();
+        h(Item, {
+          nome: "Modelo",
+          corpo: h(Campo, {
+            key: "modelo" + v,
+            testID: "campo-modelo",
+            valor: storage.modelo,
+            dica: GEMINI_MODELO,
+            aoMudar: function (t) {
+              storage.modelo = String(t).trim();
+              atualizar();
             },
           }),
         }),
-        h(Row, {
-          name: "API key",
-          body: h(
+        h(Item, {
+          nome: "Chave da API",
+          corpo: h(
             RN().View,
             {},
-            h(Field, {
-              key: "apikey" + v + (reveal[0] ? "s" : "h"),
-              testID: "in-key",
-              value: storage.apiKey,
-              hint: "paste your key",
-              secret: !reveal[0],
-              onChange: function (t) {
-                storage.apiKey = String(t).trim();
-                refresh();
+            h(Campo, {
+              key: "chave" + v + (mostrar[0] ? "m" : "o"),
+              testID: "campo-chave",
+              valor: storage.chave,
+              dica: "cole a chave aqui",
+              segredo: !mostrar[0],
+              aoMudar: function (t) {
+                storage.chave = String(t).trim();
+                atualizar();
               },
             }),
             h(
               RN().View,
               { style: { flexDirection: "row", flexWrap: "wrap" } },
-              h(Button, {
-                testID: "btn-paste",
-                label: "Paste",
-                onPress: function () {
+              h(Botao, {
+                testID: "btn-colar",
+                texto: "Colar",
+                aoTocar: function () {
                   try {
                     metro.common.clipboard.getString().then(function (t) {
                       t = String(t || "").trim();
-                      if (!t) return toast("Clipboard is empty");
-                      storage.apiKey = t;
-                      refresh();
+                      if (!t) return avisar("A área de transferência está vazia");
+                      storage.chave = t;
+                      atualizar();
                     });
                   } catch (e) {
-                    toast("Could not read the clipboard");
+                    avisar("Não consegui ler a área de transferência");
                   }
                 },
               }),
-              h(Button, {
-                testID: "btn-reveal",
-                secondary: true,
-                label: reveal[0] ? "Hide" : "Show",
-                onPress: function () {
-                  reveal[1](!reveal[0]);
+              h(Botao, {
+                testID: "btn-mostrar",
+                secundario: true,
+                texto: mostrar[0] ? "Ocultar" : "Mostrar",
+                aoTocar: function () {
+                  mostrar[1](!mostrar[0]);
                 },
               })
             )
@@ -742,31 +760,31 @@
     onLoad: function () {
       ["__corretor", "__grammify"].forEach(function (k) {
         try {
-          var old = G[k];
-          if (old && typeof old.desligar === "function") old.desligar();
-          else if (old && typeof old.shutdown === "function") old.shutdown();
+          var antigo = G[k];
+          if (antigo && typeof antigo.desligar === "function") antigo.desligar();
+          else if (antigo && typeof antigo.shutdown === "function") antigo.shutdown();
         } catch (e) {}
       });
-      G.__grammify = { id: instanceId, shutdown: shutdown };
-      alive = true;
-      if (storage.apiUrl === undefined && storage.url) storage.apiUrl = storage.url;
-      if (storage.apiKey === undefined && storage.chave) storage.apiKey = storage.chave;
-      if (storage.model === undefined && storage.modelo) storage.model = storage.modelo;
-      if (storage.enabled === undefined) storage.enabled = storage.ligada === undefined ? true : !!storage.ligada;
+      G.__grammify = { id: idInstancia, desligar: encerrar };
+      vivo = true;
+      if (storage.url === undefined && storage.apiUrl) storage.url = storage.apiUrl;
+      if (storage.chave === undefined && storage.apiKey) storage.chave = storage.apiKey;
+      if (storage.modelo === undefined && storage.model) storage.modelo = storage.model;
+      if (storage.ligada === undefined) storage.ligada = storage.enabled === undefined ? true : !!storage.enabled;
       try {
-        installPatch();
+        instalarPatch();
       } catch (e) {
-        alive = false;
+        vivo = false;
         throw e;
       }
-      warmUp();
+      aquecer();
     },
     onUnload: function () {
-      shutdown();
+      encerrar();
       try {
-        if (G.__grammify && G.__grammify.id === instanceId) G.__grammify = null;
+        if (G.__grammify && G.__grammify.id === idInstancia) G.__grammify = null;
       } catch (e) {}
     },
-    settings: Panel,
+    settings: Painel,
   };
 })();
