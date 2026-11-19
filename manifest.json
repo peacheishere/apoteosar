@@ -1,11 +1,11 @@
 {
-  "name": "Corretor",
-  "description": "Corrige acentos, maiúsculas, ponto final e vírgula das suas mensagens antes de enviar, usando uma API de IA. Tudo é configurado no painel do plugin (sem slash commands).",
+  "name": "Grammify",
+  "description": "Fixes accents, capitalization, periods, commas and crases in your messages before sending them, using an AI API.",
   "authors": [
     {
       "name": "apoteosar"
     }
   ],
   "main": "index.js",
-  "hash": "49706508833c976785da28b889ed801ad5451b32e897c1009924353856b6c53c"
+  "hash": "0dbc7a922f29a9ff159f92408e643692d4cb9e78db0efe2c413ce539d56ff519"
 }
