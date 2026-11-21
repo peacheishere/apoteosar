@@ -6,6 +6,7 @@
   var storage = vendetta.plugin.storage;
   var showToast = vendetta.ui.toasts.showToast;
 
+  var VERSAO = "0.14";
   var NOME = "Grammify";
   var LIMITE_CARACTERES = 1500;
   var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
@@ -43,9 +44,33 @@
   ].join("|");
   var ENFEITE_INTEIRO = new RegExp("^(?:" + ENFEITE + ")+$", "i");
   var ERRADAS = /\b(?:nao|voce|voces|tambem|entao|ja|la|so|ate|alem|porem|tres|ne|ai|ca|sao|mae)\b|\b\w+(?:cao|coes|soes)\b/i;
-  var ATRASO_REFORCO = 2000;
-  var ESPERA_REPETIR = 700;
+  var TEMPO_MAXIMO = 8000;
+  var TEMPO_SONDA = 2500;
+  var ESPERAS = [500, 1000, 2000];
+  var MAX_TENTATIVAS = 5;
+  var REFORCO_MIN = 800;
+  var REFORCO_MAX = 2500;
+  var REFORCO_PADRAO = 1500;
+  var CACHE_MAX = 200;
+  var CACHE_VALIDADE = 1800000;
   var INTERVALO_AQUECER = 240000;
+  var RISADA = /^(?:k{2,}|(?:ha){2,}h?|(?:he){2,}h?|(?:rs)+)$/i;
+  var INTERROGATIVAS = ["como", "quando", "onde", "qual", "quais", "quem", "quanto", "quantos", "quanta", "quantas", "cade"];
+  var CURTAS = {
+    oi: 1, ola: 1, sim: 1, nao: 1, ok: 1, valeu: 1, vlw: 1, blz: 1, obrigado: 1, obrigada: 1,
+    tchau: 1, beleza: 1, show: 1, "bom dia": 1, "boa tarde": 1, "boa noite": 1,
+  };
+  var DICIONARIO = {
+    nao: "não", voce: "você", voces: "vocês", tambem: "também", entao: "então", ate: "até", ja: "já",
+    la: "lá", ca: "cá", so: "só", alem: "além", porem: "porém", tres: "três", ne: "né", ta: "tá",
+    mae: "mãe", maes: "mães", pao: "pão", paes: "pães", irmao: "irmão", irmaos: "irmãos", mao: "mão",
+    maos: "mãos", coracao: "coração", cao: "cão", sao: "são", amanha: "amanhã", ninguem: "ninguém",
+    alguem: "alguém", parabens: "parabéns", video: "vídeo", videos: "vídeos", ultimo: "último",
+    ultima: "última", proximo: "próximo", proxima: "próxima", possivel: "possível", facil: "fácil",
+    dificil: "difícil", musica: "música", historia: "história", familia: "família", agua: "água",
+    cafe: "café", medico: "médico", numero: "número", unico: "único", otimo: "ótimo", pessimo: "péssimo",
+    ola: "olá", sabado: "sábado", terca: "terça", ferias: "férias", onibus: "ônibus",
+  };
   var COM_ACENTO = "áàâãäåéèêëíìîïóòôõöúùûüçñ";
   var SEM_ACENTO = "aaaaaaeeeeiiiiooooouuuucn";
 
@@ -96,11 +121,50 @@
   var fila = Promise.resolve();
   var pendentes = 0;
   var emVoo = [];
-  var bloqueadoAte = 0;
+  var semIaAte = 0;
+  var falhasSeguidas = 0;
+  var latencias = [];
+  var reforcos = [];
   var ultimoAviso = 0;
   var cache = {};
   var chavesCache = [];
   var intervaloAquecer = null;
+  var recursos = { temporizadores: [] };
+
+  function agendar(fn, ms) {
+    var id = setTimeout(function () {
+      var i = recursos.temporizadores.indexOf(id);
+      if (i >= 0) recursos.temporizadores.splice(i, 1);
+      fn();
+    }, ms);
+    recursos.temporizadores.push(id);
+    return id;
+  }
+
+  function cancelarAgendado(id) {
+    if (id === null || id === undefined) return;
+    clearTimeout(id);
+    var i = recursos.temporizadores.indexOf(id);
+    if (i >= 0) recursos.temporizadores.splice(i, 1);
+  }
+
+  function limparTudo() {
+    recursos.temporizadores.slice().forEach(cancelarAgendado);
+    if (intervaloAquecer) {
+      clearInterval(intervaloAquecer);
+      intervaloAquecer = null;
+    }
+    emVoo.slice().forEach(function (item) {
+      try {
+        item.cancelar();
+      } catch (e) {}
+    });
+    emVoo.length = 0;
+    chavesCache.length = 0;
+    Object.keys(cache).forEach(function (k) {
+      delete cache[k];
+    });
+  }
 
   function avisar(texto) {
     try {
@@ -141,7 +205,6 @@
     if (texto.length > LIMITE_CARACTERES) return "muito longa";
     if (/^(s\/|\+:|\/)/.test(texto)) return "comando do app";
     if (/^\s*(?:k{2,}|(?:ha){2,}h?|(?:he){2,}h?|(?:rs)+)\s*$/i.test(texto)) return "risada";
-    if (Date.now() < bloqueadoAte) return "limite da API";
     return null;
   }
 
@@ -158,8 +221,8 @@
   function marcarLimite(erro) {
     var s = Number(erro && erro.espera);
     var ms = s > 0 && s <= 3600 ? s * 1000 : 60000;
-    bloqueadoAte = Date.now() + ms;
-    avisar(NOME + ": limite da API atingido, enviando sem correção por " + Math.round(ms / 1000) + "s");
+    semIaAte = Date.now() + ms;
+    avisar(NOME + ": limite da API atingido, usando correção local por " + Math.round(ms / 1000) + "s");
   }
 
   function avisarFalha(erro) {
@@ -168,7 +231,45 @@
     var agora = Date.now();
     if (agora - ultimoAviso < 8000) return;
     ultimoAviso = agora;
-    avisar(NOME + ": enviada como digitada (" + motivo.slice(0, 40) + ")");
+    avisar(NOME + ": a IA falhou (" + motivo.slice(0, 40) + "), correção local utilizada");
+  }
+
+  function iaDisponivel() {
+    return Date.now() >= semIaAte;
+  }
+
+  function registrarSucesso() {
+    falhasSeguidas = 0;
+    semIaAte = 0;
+  }
+
+  function registrarFalha(erro) {
+    if (!erro || erro.limiteApi) return;
+    if (!(erro.prazo || erro.rede || repetivel(erro))) return;
+    falhasSeguidas++;
+    if (falhasSeguidas >= 2) semIaAte = Date.now() + Math.min(20000 * Math.pow(2, falhasSeguidas - 2), 120000);
+  }
+
+  function registrarLatencia(ms) {
+    latencias.push(ms);
+    if (latencias.length > 20) latencias.shift();
+  }
+
+  function atrasoReforco() {
+    if (latencias.length < 3) return REFORCO_PADRAO;
+    var ordenadas = latencias.slice().sort(function (a, b) {
+      return a - b;
+    });
+    var mediana = ordenadas[Math.floor(ordenadas.length / 2)];
+    return Math.min(REFORCO_MAX, Math.max(REFORCO_MIN, mediana * 3));
+  }
+
+  function podeReforcar() {
+    var agora = Date.now();
+    reforcos = reforcos.filter(function (t) {
+      return agora - t < 60000;
+    });
+    return reforcos.length < 3;
   }
 
   function erroHttp(status, corpo, depoisDe) {
@@ -270,24 +371,35 @@
     return !!e && (e.rede === true || e.status === 500 || e.status === 502 || e.status === 503 || e.status === 504);
   }
 
-  function chamarApi(texto, rigido) {
+  function chamarApi(texto, rigido, prazo, sonda) {
     return new Promise(function (resolver, rejeitar) {
+      function erroPrazo() {
+        var e = new Error("demorou demais");
+        e.prazo = true;
+        return e;
+      }
+      if (Date.now() >= prazo) return rejeitar(erroPrazo());
+
       var tentativas = 0;
       var ativas = 0;
       var agendadas = 0;
+      var repeticoes = 0;
       var fechado = false;
       var primeiroErro = null;
       var entradas = [];
-      var reforco = null;
+      var temporizadores = [];
+      var maximo = sonda ? 1 : MAX_TENTATIVAS;
 
       function fechar() {
         fechado = true;
-        if (reforco) clearTimeout(reforco);
+        temporizadores.forEach(cancelarAgendado);
+        temporizadores.length = 0;
         entradas.forEach(function (item) {
           try {
             item.cancelar();
           } catch (e) {}
         });
+        entradas.length = 0;
       }
 
       function falhar(e) {
@@ -296,17 +408,20 @@
         rejeitar(e);
       }
 
-      function lancar() {
+      function lancar(reforco) {
         if (fechado) return;
-        if (!vivo || tentativas >= 3) {
+        if (!vivo || tentativas >= maximo) {
           if (ativas === 0 && agendadas === 0) falhar(primeiroErro || new Error("cancelada"));
           return;
         }
+        if (reforco) reforcos.push(Date.now());
         tentativas++;
         ativas++;
+        var t0 = Date.now();
         enviarPedido(texto, rigido, entradas).then(
           function (r) {
             if (fechado) return;
+            registrarLatencia(Date.now() - t0);
             fechar();
             resolver(r);
           },
@@ -315,24 +430,38 @@
             if (fechado) return;
             if (!primeiroErro) primeiroErro = e;
             if (e && (e.limiteApi || e.message === "cancelada")) return falhar(e);
-            if (repetivel(e) && vivo && tentativas < 3) {
-              agendadas++;
-              setTimeout(function () {
-                agendadas--;
-                lancar();
-              }, ESPERA_REPETIR);
-              return;
+            if (repetivel(e) && vivo && tentativas < maximo) {
+              var espera = ESPERAS[Math.min(repeticoes, ESPERAS.length - 1)];
+              repeticoes++;
+              if (Date.now() + espera < prazo) {
+                agendadas++;
+                temporizadores.push(
+                  agendar(function () {
+                    agendadas--;
+                    lancar(false);
+                  }, espera)
+                );
+                return;
+              }
             }
             if (ativas === 0 && agendadas === 0) falhar(primeiroErro);
           }
         );
       }
 
-      lancar();
-      reforco = setTimeout(function () {
-        reforco = null;
-        lancar();
-      }, ATRASO_REFORCO);
+      temporizadores.push(
+        agendar(function () {
+          falhar(erroPrazo());
+        }, prazo - Date.now())
+      );
+      lancar(false);
+      if (!sonda) {
+        temporizadores.push(
+          agendar(function () {
+            if (podeReforcar()) lancar(true);
+          }, atrasoReforco())
+        );
+      }
     });
   }
 
@@ -471,12 +600,80 @@
     return texto;
   }
 
+  function lerCache(k) {
+    var entrada = cache[k];
+    if (!entrada) return undefined;
+    if (Date.now() - entrada.t > CACHE_VALIDADE) {
+      delete cache[k];
+      var i = chavesCache.indexOf(k);
+      if (i >= 0) chavesCache.splice(i, 1);
+      return undefined;
+    }
+    return entrada.v;
+  }
+
   function guardarCache(k, v) {
+    if (k.length > 600) return;
     if (cache[k] === undefined) {
       chavesCache.push(k);
-      if (chavesCache.length > 40) delete cache[chavesCache.shift()];
+      if (chavesCache.length > CACHE_MAX) delete cache[chavesCache.shift()];
     }
-    cache[k] = v;
+    cache[k] = { v: v, t: Date.now() };
+  }
+
+  function casarCaixa(modelo, nova) {
+    if (modelo.length > 1 && modelo === modelo.toUpperCase()) return nova.toUpperCase();
+    if (modelo.charAt(0) !== modelo.charAt(0).toLowerCase()) return nova.charAt(0).toUpperCase() + nova.slice(1);
+    return nova;
+  }
+
+  function acentuar(palavra) {
+    var chave = palavra.toLowerCase();
+    var nova = null;
+    if (Object.prototype.hasOwnProperty.call(DICIONARIO, chave)) nova = DICIONARIO[chave];
+    else {
+      var m = /^(.+)(cao|coes|soes)$/.exec(chave);
+      if (m) nova = m[1] + { cao: "ção", coes: "ções", soes: "sões" }[m[2]];
+    }
+    return nova ? casarCaixa(palavra, nova) : null;
+  }
+
+  function precisaPontoFinal(texto, palavras) {
+    if (/[.!?\u2026:;]["')\]]*\s*$/.test(texto)) return false;
+    if (/\u00a7\d+\u00a7\s*$/.test(texto)) return false;
+    var primeira = chavePalavra(palavras[0] || "");
+    var segunda = chavePalavra(palavras[1] || "");
+    if (INTERROGATIVAS.indexOf(primeira) >= 0) return false;
+    if ((primeira === "por" || primeira === "pra" || primeira === "para" || primeira === "o") && segunda === "que") return false;
+    return true;
+  }
+
+  function corrigirLocal(protegido) {
+    var partes = dividirTexto(protegido);
+    var resultado = "";
+    for (var i = 0; i < partes.palavras.length; i++) {
+      var palavra = partes.palavras[i];
+      var nova = palavra;
+      if (palavra.indexOf("\u00a7") < 0) {
+        var acentuada = acentuar(palavra);
+        if (acentuada) nova = acentuada;
+      }
+      resultado += partes.entres[i];
+      if (inicioDeFrase(resultado) && /^[a-z\u00e0-\u00ff]/.test(nova) && !RISADA.test(nova)) {
+        nova = nova.charAt(0).toUpperCase() + nova.slice(1);
+      }
+      resultado += nova;
+    }
+    resultado += partes.entres[partes.palavras.length];
+    if (precisaPontoFinal(resultado, partes.palavras)) resultado += ".";
+    return resultado;
+  }
+
+  function respostaCurta(protegido) {
+    if (/[A-Z]/.test(protegido)) return null;
+    var chave = chavePalavra(protegido.replace(/\s+/g, " ").replace(/^ | $/g, ""));
+    if (!Object.prototype.hasOwnProperty.call(CURTAS, chave)) return null;
+    return corrigirLocal(protegido);
   }
 
   function jaEstaCerto(s) {
@@ -507,11 +704,12 @@
     };
   }
 
-  function pedirCorrecao(protegido) {
-    return chamarApi(protegido, false).then(function (resposta) {
+  function pedirCorrecao(protegido, sonda) {
+    var prazo = Date.now() + (sonda ? TEMPO_SONDA : TEMPO_MAXIMO);
+    return chamarApi(protegido, false, prazo, sonda).then(function (resposta) {
       var unido = juntarResposta(protegido, resposta);
       if (unido) return ajustarCaixa(protegido, unido);
-      return chamarApi(protegido, true).then(function (segunda) {
+      return chamarApi(protegido, true, prazo, sonda).then(function (segunda) {
         var outro = juntarResposta(protegido, segunda);
         if (!outro) throw new Error("resposta inválida");
         return ajustarCaixa(protegido, outro);
@@ -527,18 +725,26 @@
     });
     if (!/[A-Za-z\u00c0-\u00ff]/.test(protegido.replace(MARCADOR, ""))) return Promise.resolve(nucleo);
     if (jaEstaCerto(protegido)) return Promise.resolve(nucleo);
+    var curta = respostaCurta(protegido);
+    if (curta !== null) return Promise.resolve(restaurar(curta, guardados));
     var chaveCache = "k" + protegido;
-    if (cache[chaveCache] !== undefined) return Promise.resolve(restaurar(cache[chaveCache], guardados));
-    return pedirCorrecao(protegido).then(
+    var guardada = lerCache(chaveCache);
+    if (guardada !== undefined) return Promise.resolve(restaurar(guardada, guardados));
+    if (!iaDisponivel()) return Promise.resolve(restaurar(corrigirLocal(protegido), guardados));
+    return pedirCorrecao(protegido, falhasSeguidas >= 2).then(
       function (unido) {
-        bloqueadoAte = 0;
+        registrarSucesso();
         guardarCache(chaveCache, unido);
         return restaurar(unido, guardados);
       },
       function (erro) {
+        if (erro && erro.message === "cancelada") return nucleo;
         if (erro && erro.limiteApi) marcarLimite(erro);
-        else avisarFalha(erro);
-        return nucleo;
+        else {
+          registrarFalha(erro);
+          avisarFalha(erro);
+        }
+        return restaurar(corrigirLocal(protegido), guardados);
       }
     );
   }
@@ -567,11 +773,7 @@
 
   function encerrar() {
     vivo = false;
-    if (intervaloAquecer) {
-      clearInterval(intervaloAquecer);
-      intervaloAquecer = null;
-    }
-    cancelarPendentes();
+    limparTudo();
     desfazer.forEach(function (f) {
       try {
         f();
@@ -785,7 +987,7 @@
       h(
         RN().View,
         { style: { marginBottom: 12, paddingHorizontal: 4 } },
-        h(RN().Text, { style: { color: c.texto, fontSize: 18, fontWeight: "700" } }, NOME),
+        h(RN().Text, { style: { color: c.texto, fontSize: 18, fontWeight: "700" } }, NOME + " v" + VERSAO),
         h(
           RN().Text,
           { style: { color: ausentes.length ? c.perigo : c.sucesso, fontSize: 13, marginTop: 4 } },
@@ -921,6 +1123,7 @@
         vivo = false;
         throw e;
       }
+      if (intervaloAquecer) clearInterval(intervaloAquecer);
       aquecer();
       intervaloAquecer = setInterval(function () {
         if (ativo()) aquecer();
