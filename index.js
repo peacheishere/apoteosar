@@ -6,7 +6,7 @@
   var storage = vendetta.plugin.storage;
   var showToast = vendetta.ui.toasts.showToast;
 
-  var VERSAO = "0.14";
+  var VERSAO = "0.15";
   var NOME = "Grammify";
   var LIMITE_CARACTERES = 1500;
   var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
@@ -81,6 +81,8 @@
     "2) MAIÚSCULAS: apenas a primeira letra da mensagem, a primeira letra depois de ponto final, ? ou ! e os nomes próprios (pessoas, lugares, marcas, apps como Discord). Depois de vírgula, ponto e vírgula ou dois-pontos a palavra continua minúscula (salvo nome próprio).",
     "3) PONTUAÇÃO: use ponto final, vírgula, ponto e vírgula (;) e dois-pontos (:) como manda a gramática do português brasileiro; til (~) só quando fizer sentido. O ponto final pode ir no MEIO do texto, separando frases (a próxima começa com maiúscula), e também no fim. Se já houver pontuação errada ou sobrando, REMOVA, TROQUE ou MUDE DE LUGAR. Só deixe sem ponto final se a frase for CLARAMENTE uma pergunta (sem ponto final e sem interrogação).",
     "CAIXA ALTA: palavras ou trechos que já estão em MAIÚSCULAS (caps lock) ficam em maiúsculas, nunca passe para minúsculas. Se a mensagem inteira está em maiúsculas, devolva-a inteira em maiúsculas (só acentos e pontuação mudam). Nunca ponha em maiúsculas uma palavra que estava minúscula, exceto a letra inicial quando a regra 2 pedir.",
+    "TEXTOS LONGOS: corrija o texto inteiro, do começo ao fim, com a mesma atenção. Em textos grandes, acentue todas as palavras que precisam e ponha as vírgulas e os pontos finais em todo o trecho, não só no começo e no fim. Erros de gramática (concordância, conjugação, mais/mas) NÃO são corrigidos: as palavras ficam como estão.",
+    "ACENTOS SUGERIDOS: se a mensagem vier seguida de uma tag <acentos>, ela lista palavras do texto que quase sempre levam acento (formato digitada=correta). Use essas formas, a menos que a palavra seja claramente de outro idioma. A lista não é completa: acentue também as outras palavras que precisarem.",
     "PALAVRAS EM INGLÊS: na internet o português vem misturado com inglês e termos como Discord, ok, live, meme. Isso é normal. Trate a mensagem como português mesmo assim, no início, no meio ou no fim, e até quando for uma palavra solta em inglês: aplique maiúscula inicial, pontuação e ponto final normalmente. Deixe as palavras estrangeiras exatamente como estão (não traduza, não acentue, não mude a caixa, salvo a letra inicial da frase e nomes próprios). Se a mensagem inteira estiver em inglês, só ponha a maiúscula inicial e a pontuação.",
     "PROIBIDO: trocar, remover, adicionar, juntar, separar ou reordenar palavras; traduzir; corrigir gírias, abreviações (vc, tb, blz, kkk) ou erros de digitação; mudar o tom; adicionar emojis, exclamações, interrogações ou qualquer símbolo que não seja . , ; : ~ ; mexer em porque/por que/porquê, mas/mais, a/há. Interrogações e exclamações que já estão no texto ficam exatamente onde estão.",
     "MARCADORES \u00a7número\u00a7: cada marcador representa um item (menção, link, emoji, número, nome de canal) e conta como UMA palavra. Mantenha-o exatamente onde está, com a pontuação que a frase pedir ao redor (por exemplo, vírgulas quando ele chama alguém).",
@@ -103,8 +105,10 @@
     ["ta MUITO quente hoje", "Tá MUITO quente hoje."],
     ["ENTAO VOCE NAO VAI", "ENTÃO, VOCÊ NÃO VAI."],
     ["mano que loucura isso ne", "Mano, que loucura isso, né."],
+    ["ontem eu fui no mercado mais quando cheguei la nao tinha nada entao eu decidiu ir em outro lugar so que as lojas estava fechado", "Ontem eu fui no mercado, mais quando cheguei lá não tinha nada, então eu decidiu ir em outro lugar, só que as lojas estava fechado."],
     ["kkkk", "kkkk"],
   ];
+  var AMBIGUAS = { so: 1, ate: 1 };
 
   var G = (function () {
     try {
@@ -283,13 +287,34 @@
     return e;
   }
 
+  function dicasAcentos(texto) {
+    var dicas = [];
+    var vistas = {};
+    dividirTexto(texto).palavras.forEach(function (palavra) {
+      if (palavra.indexOf("\u00a7") >= 0) return;
+      var minuscula = palavra.toLowerCase();
+      if (vistas[minuscula] || dicas.length >= 15) return;
+      var certa = acentuar(minuscula);
+      if (certa) {
+        vistas[minuscula] = true;
+        dicas.push(minuscula + "=" + certa);
+      }
+    });
+    return dicas.join(", ");
+  }
+
+  function conteudoUsuario(texto) {
+    var dicas = dicasAcentos(texto);
+    return "<mensagem>" + texto + "</mensagem>" + (dicas ? "\n<acentos>" + dicas + "</acentos>" : "");
+  }
+
   function montarMensagens(texto, rigido) {
     var mensagens = [{ role: "system", content: rigido ? SISTEMA + "\n" + AVISO_RIGIDO : SISTEMA }];
     EXEMPLOS.forEach(function (par) {
-      mensagens.push({ role: "user", content: "<mensagem>" + par[0] + "</mensagem>" });
+      mensagens.push({ role: "user", content: conteudoUsuario(par[0]) });
       mensagens.push({ role: "assistant", content: par[1] });
     });
-    mensagens.push({ role: "user", content: "<mensagem>" + texto + "</mensagem>" });
+    mensagens.push({ role: "user", content: conteudoUsuario(texto) });
     return mensagens;
   }
 
@@ -638,6 +663,23 @@
     return nova ? casarCaixa(palavra, nova) : null;
   }
 
+  function completarAcentos(texto) {
+    var partes = dividirTexto(texto);
+    var faltam = 0;
+    partes.palavras.forEach(function (palavra) {
+      if (palavra.indexOf("\u00a7") >= 0) return;
+      if (acentuar(palavra) && !AMBIGUAS[palavra.toLowerCase()]) faltam++;
+    });
+    if (faltam === 0) return texto;
+    var resultado = "";
+    for (var i = 0; i < partes.palavras.length; i++) {
+      var palavra = partes.palavras[i];
+      var nova = palavra.indexOf("\u00a7") >= 0 ? null : acentuar(palavra);
+      resultado += partes.entres[i] + (nova || palavra);
+    }
+    return resultado + partes.entres[partes.palavras.length];
+  }
+
   function precisaPontoFinal(texto, palavras) {
     if (/[.!?\u2026:;]["')\]]*\s*$/.test(texto)) return false;
     if (/\u00a7\d+\u00a7\s*$/.test(texto)) return false;
@@ -708,11 +750,11 @@
     var prazo = Date.now() + (sonda ? TEMPO_SONDA : TEMPO_MAXIMO);
     return chamarApi(protegido, false, prazo, sonda).then(function (resposta) {
       var unido = juntarResposta(protegido, resposta);
-      if (unido) return ajustarCaixa(protegido, unido);
+      if (unido) return ajustarCaixa(protegido, completarAcentos(unido));
       return chamarApi(protegido, true, prazo, sonda).then(function (segunda) {
         var outro = juntarResposta(protegido, segunda);
         if (!outro) throw new Error("resposta inválida");
-        return ajustarCaixa(protegido, outro);
+        return ajustarCaixa(protegido, completarAcentos(outro));
       });
     });
   }
