@@ -6,7 +6,7 @@
   var storage = vendetta.plugin.storage;
   var showToast = vendetta.ui.toasts.showToast;
 
-  var VERSAO = "0.15";
+  var VERSAO = "0.16";
   var NOME = "Grammify";
   var LIMITE_CARACTERES = 1500;
   var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
@@ -54,12 +54,6 @@
   var CACHE_MAX = 200;
   var CACHE_VALIDADE = 1800000;
   var INTERVALO_AQUECER = 240000;
-  var RISADA = /^(?:k{2,}|(?:ha){2,}h?|(?:he){2,}h?|(?:rs)+)$/i;
-  var INTERROGATIVAS = ["como", "quando", "onde", "qual", "quais", "quem", "quanto", "quantos", "quanta", "quantas", "cade"];
-  var CURTAS = {
-    oi: 1, ola: 1, sim: 1, nao: 1, ok: 1, valeu: 1, vlw: 1, blz: 1, obrigado: 1, obrigada: 1,
-    tchau: 1, beleza: 1, show: 1, "bom dia": 1, "boa tarde": 1, "boa noite": 1,
-  };
   var DICIONARIO = {
     nao: "não", voce: "você", voces: "vocês", tambem: "também", entao: "então", ate: "até", ja: "já",
     la: "lá", ca: "cá", so: "só", alem: "além", porem: "porém", tres: "três", ne: "né", ta: "tá",
@@ -226,7 +220,7 @@
     var s = Number(erro && erro.espera);
     var ms = s > 0 && s <= 3600 ? s * 1000 : 60000;
     semIaAte = Date.now() + ms;
-    avisar(NOME + ": limite da API atingido, usando correção local por " + Math.round(ms / 1000) + "s");
+    avisar(NOME + ": limite da API atingido, enviando sem correção por " + Math.round(ms / 1000) + "s");
   }
 
   function avisarFalha(erro) {
@@ -235,7 +229,7 @@
     var agora = Date.now();
     if (agora - ultimoAviso < 8000) return;
     ultimoAviso = agora;
-    avisar(NOME + ": a IA falhou (" + motivo.slice(0, 40) + "), correção local utilizada");
+    avisar(NOME + ": a IA falhou (" + motivo.slice(0, 40) + "), mensagem enviada como digitada");
   }
 
   function iaDisponivel() {
@@ -251,7 +245,6 @@
     if (!erro || erro.limiteApi) return;
     if (!(erro.prazo || erro.rede || repetivel(erro))) return;
     falhasSeguidas++;
-    if (falhasSeguidas >= 2) semIaAte = Date.now() + Math.min(20000 * Math.pow(2, falhasSeguidas - 2), 120000);
   }
 
   function registrarLatencia(ms) {
@@ -680,44 +673,6 @@
     return resultado + partes.entres[partes.palavras.length];
   }
 
-  function precisaPontoFinal(texto, palavras) {
-    if (/[.!?\u2026:;]["')\]]*\s*$/.test(texto)) return false;
-    if (/\u00a7\d+\u00a7\s*$/.test(texto)) return false;
-    var primeira = chavePalavra(palavras[0] || "");
-    var segunda = chavePalavra(palavras[1] || "");
-    if (INTERROGATIVAS.indexOf(primeira) >= 0) return false;
-    if ((primeira === "por" || primeira === "pra" || primeira === "para" || primeira === "o") && segunda === "que") return false;
-    return true;
-  }
-
-  function corrigirLocal(protegido) {
-    var partes = dividirTexto(protegido);
-    var resultado = "";
-    for (var i = 0; i < partes.palavras.length; i++) {
-      var palavra = partes.palavras[i];
-      var nova = palavra;
-      if (palavra.indexOf("\u00a7") < 0) {
-        var acentuada = acentuar(palavra);
-        if (acentuada) nova = acentuada;
-      }
-      resultado += partes.entres[i];
-      if (inicioDeFrase(resultado) && /^[a-z\u00e0-\u00ff]/.test(nova) && !RISADA.test(nova)) {
-        nova = nova.charAt(0).toUpperCase() + nova.slice(1);
-      }
-      resultado += nova;
-    }
-    resultado += partes.entres[partes.palavras.length];
-    if (precisaPontoFinal(resultado, partes.palavras)) resultado += ".";
-    return resultado;
-  }
-
-  function respostaCurta(protegido) {
-    if (/[A-Z]/.test(protegido)) return null;
-    var chave = chavePalavra(protegido.replace(/\s+/g, " ").replace(/^ | $/g, ""));
-    if (!Object.prototype.hasOwnProperty.call(CURTAS, chave)) return null;
-    return corrigirLocal(protegido);
-  }
-
   function jaEstaCerto(s) {
     var m = /[A-Za-z\u00c0-\u00ff]/.exec(s);
     if (!m || m[0] !== m[0].toUpperCase()) return false;
@@ -767,12 +722,10 @@
     });
     if (!/[A-Za-z\u00c0-\u00ff]/.test(protegido.replace(MARCADOR, ""))) return Promise.resolve(nucleo);
     if (jaEstaCerto(protegido)) return Promise.resolve(nucleo);
-    var curta = respostaCurta(protegido);
-    if (curta !== null) return Promise.resolve(restaurar(curta, guardados));
     var chaveCache = "k" + protegido;
     var guardada = lerCache(chaveCache);
     if (guardada !== undefined) return Promise.resolve(restaurar(guardada, guardados));
-    if (!iaDisponivel()) return Promise.resolve(restaurar(corrigirLocal(protegido), guardados));
+    if (!iaDisponivel()) return Promise.resolve(nucleo);
     return pedirCorrecao(protegido, falhasSeguidas >= 2).then(
       function (unido) {
         registrarSucesso();
@@ -786,7 +739,7 @@
           registrarFalha(erro);
           avisarFalha(erro);
         }
-        return restaurar(corrigirLocal(protegido), guardados);
+        return nucleo;
       }
     );
   }
